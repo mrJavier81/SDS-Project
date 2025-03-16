@@ -9,19 +9,22 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync/atomic"
 
 	"prac/pkg/api"
 	"prac/pkg/store"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 )
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db           store.Store // base de datos
-	log          *log.Logger // logger para mensajes de error e información
-	tokenCounter int64       // contador para generar tokens
+	db  store.Store // base de datos
+	log *log.Logger // logger para mensajes de error e información
+	//tokenCounter int64       // contador para generar tokens
 }
 
 // Run inicia la base de datos y arranca el servidor HTTP.
@@ -88,10 +91,25 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
-// generateToken crea un token único incrementando un contador interno (inseguro)
+// generateToken crea un token seguro usando valores aleatorios y SHA-256
 func (s *server) generateToken() string {
-	id := atomic.AddInt64(&s.tokenCounter, 1) // atomic es necesario al haber paralelismo en las peticiones HTTP.
-	return fmt.Sprintf("token_%d", id)
+	// Generar 32 bytes aleatorios
+	randomBytes := make([]byte, 32)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		s.log.Println("Error generando token:", err)
+		return "" // En caso de error, devolvería un token vacío (puedes manejarlo mejor)
+	}
+
+	// Aplicar SHA-256
+	hash := sha256.Sum256(randomBytes)
+
+	// Convertir el hash en string hexadecimal
+	token := hex.EncodeToString(hash[:])
+
+	fmt.Println("Token generado:", token)
+
+	return token
 }
 
 // Función para hashear una contraseña usando bcrypt
