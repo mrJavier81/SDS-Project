@@ -126,7 +126,7 @@ func hashPassword(password string) (string, error) {
 // - Creamos entrada vacía en 'userdata' para el usuario
 func (s *server) registerUser(req api.Request) api.Response {
 	// Validación básica
-	if req.Username == "" || req.Password == "" {
+	if req.Username == "" || req.Password == "" || req.Role == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
