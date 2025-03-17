@@ -91,6 +91,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 // generateToken crea un token único incrementando un contador interno (inseguro)
 func (s *server) generateToken() string {
 	id := atomic.AddInt64(&s.tokenCounter, 1) // atomic es necesario al haber paralelismo en las peticiones HTTP.
+	token := fmt.Sprintf("token_%d", id)
+	fmt.Println("Token generado:", token)
 	return fmt.Sprintf("token_%d", id)
 }
 
@@ -101,12 +103,6 @@ func hashPassword(password string) (string, error) {
 		return "", err
 	}
 	return string(hashed), nil
-}
-
-// Función para verificar una contraseña
-func checkPassword(password, hashed string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(password))
-	return err == nil
 }
 
 // registerUser registra un nuevo usuario, si no existe.
