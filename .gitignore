@@ -3,7 +3,6 @@
 *.out
 *.bin
 *.db
-main
-prac
+*.out
 
 
