@@ -140,7 +140,8 @@ func (c *client) administrarUsuarios() {
 			Data:   "list",
 		})
 		if res.Success {
-			fmt.Println("Usuarios registrados:", res.Data)
+			fmt.Println("Usuarios registrados:")
+			fmt.Println(res.Data)
 		} else {
 			fmt.Println("Error:", res.Message)
 		}

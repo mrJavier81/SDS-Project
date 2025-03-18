@@ -118,9 +118,13 @@ func (s *server) manageUsers(req api.Request) api.Response {
 
 		users := []string{}
 		for _, key := range keys {
-			users = append(users, string(key))
+			role, err := s.db.Get("roles", key)
+			if err != nil {
+				role = []byte("unknown") // Default to "unknown" if role is not found
+			}
+			users = append(users, fmt.Sprintf("%s (%s)", string(key), string(role)))
 		}
-		return api.Response{Success: true, Message: "Usuarios listados", Data: strings.Join(users, ",")}
+		return api.Response{Success: true, Message: "Usuarios listados", Data: strings.Join(users, "\n")}
 
 	case "delete":
 		// Delete a user
