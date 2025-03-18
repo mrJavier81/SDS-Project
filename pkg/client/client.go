@@ -21,6 +21,7 @@ type client struct {
 	log         *log.Logger
 	currentUser string
 	authToken   string
+	userRole    string
 }
 
 // Run es la única función exportada de este paquete.
@@ -64,8 +65,13 @@ func (c *client) runLoop() {
 				"Ver datos",
 				"Actualizar datos",
 				"Cerrar sesión",
-				"Salir",
 			}
+
+			if c.userRole == "admin" {
+				options = append(options, "Administrar usuarios")
+			}
+
+			options = append(options, "Salir")
 		}
 
 		// Mostramos el menú y obtenemos la elección del usuario.
@@ -94,6 +100,13 @@ func (c *client) runLoop() {
 			case 3:
 				c.logoutUser()
 			case 4:
+				if c.userRole == "admin" {
+					c.administrarUsuarios()
+				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
+					c.log.Println("Saliendo del cliente...")
+					return
+				}
+			case 5:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -103,6 +116,12 @@ func (c *client) runLoop() {
 		// Pausa para que el usuario vea resultados.
 		ui.Pause("Pulsa [Enter] para continuar...")
 	}
+}
+
+func (c *client) administrarUsuarios() {
+	ui.ClearScreen()
+	fmt.Println("** Administrar usuarios **")
+
 }
 
 // registerUser pide credenciales y las envía al servidor para un registro.
@@ -165,7 +184,8 @@ func (c *client) loginUser() {
 	if res.Success {
 		c.currentUser = username
 		c.authToken = res.Token
-		fmt.Println("Sesión iniciada con éxito. Token guardado.")
+		c.userRole = res.Data
+		fmt.Printf("Sesión iniciada como %v. Token guardado.\n", c.userRole)
 	}
 }
 

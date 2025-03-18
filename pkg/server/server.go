@@ -41,6 +41,14 @@ func Run() error {
 		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
 	}
 
+	// Inicializamos la lista de admins (esto es solo un ejemplo)
+	admins := []string{"Javier", "Saulet", "Fabian"}
+	for _, admin := range admins {
+		if err := srv.db.Put("admin", []byte(admin), []byte("true")); err != nil {
+			return fmt.Errorf("error inicializando lista de admins: %v", err)
+		}
+	}
+
 	// Al terminar, cerramos la base de datos
 	defer srv.db.Close()
 
@@ -126,7 +134,7 @@ func hashPassword(password string) (string, error) {
 // - Creamos entrada vacía en 'userdata' para el usuario
 func (s *server) registerUser(req api.Request) api.Response {
 	// Validación básica
-	if req.Username == "" || req.Password == "" || req.Role == "" {
+	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
@@ -137,6 +145,13 @@ func (s *server) registerUser(req api.Request) api.Response {
 	}
 	if exists {
 		return api.Response{Success: false, Message: "El usuario ya existe"}
+	}
+
+	// Determinar el rol del usuario
+	role := "user" // Por defecto, el rol es "user"
+	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	if err == nil && string(adminCheck) == "true" {
+		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
 	// Hashear la contraseña antes de almacenarla
@@ -151,6 +166,11 @@ func (s *server) registerUser(req api.Request) api.Response {
 	// Guardamos el usuario con su hash en la base de datos
 	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
+	}
+
+	// Guardamos el rol del usuario en la base de datos
+	if err := s.db.Put("roles", []byte(req.Username), []byte(role)); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar rol del usuario"}
 	}
 
 	// Creamos una entrada vacía para los datos en 'userdata'
@@ -184,7 +204,18 @@ func (s *server) loginUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
-	return api.Response{Success: true, Message: "Login exitoso", Token: token}
+	// Obtenemos el rol del usuario desde la base de datos
+	role, err := s.db.Get("roles", []byte(req.Username))
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al obtener rol del usuario"}
+	}
+
+	return api.Response{
+		Success: true,
+		Message: "Login exitoso",
+		Token:   token,
+		Data:    string(role), // Incluimos el rol en el campo Data
+	}
 }
 
 // fetchData verifica el token y retorna el contenido del namespace 'userdata'.
