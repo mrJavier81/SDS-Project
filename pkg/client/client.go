@@ -122,6 +122,61 @@ func (c *client) administrarUsuarios() {
 	ui.ClearScreen()
 	fmt.Println("** Administrar usuarios **")
 
+	options := []string{
+		"Listar usuarios",
+		"Modificar usuario",
+		"Eliminar usuario",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de administración", options)
+
+	switch choice {
+	case 1:
+		// List users
+		res := c.sendRequest(api.Request{
+			Action: api.ActionManageUsers,
+			Role:   c.userRole,
+			Data:   "list",
+		})
+		if res.Success {
+			fmt.Println("Usuarios registrados:", res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+
+	case 2:
+		// Modify user role
+		username := ui.ReadInput("Nombre del usuario a modificar")
+		newRole := ui.ReadInput("Nuevo rol (user/admin)")
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionManageUsers,
+			Role:     c.userRole,
+			Data:     "modify",
+			Username: username,
+			NewRole:  newRole,
+		})
+		fmt.Println("Resultado:", res.Message)
+
+	case 3:
+		// Delete user
+		username := ui.ReadInput("Nombre del usuario a eliminar")
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionManageUsers,
+			Role:     c.userRole,
+			Data:     "delete",
+			Username: username,
+		})
+		fmt.Println("Resultado:", res.Message)
+
+	case 4:
+		// Return to main menu
+		return
+	}
+
+	ui.Pause("Pulsa [Enter] para continuar...")
+	c.administrarUsuarios()
+
 }
 
 // registerUser pide credenciales y las envía al servidor para un registro.

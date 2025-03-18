@@ -90,6 +90,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.updateData(req)
 	case api.ActionLogout:
 		res = s.logoutUser(req)
+	case api.ActionManageUsers: // New case for managing users
+		res = s.manageUsers(req)
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -97,6 +99,57 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// Enviamos la respuesta en formato JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
+// Solo los administradores pueden acceder a esta función.
+func (s *server) manageUsers(req api.Request) api.Response {
+	if req.Role != "admin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		// List all users
+		keys, err := s.db.ListKeys("auth")
+		if err != nil {
+			return api.Response{Success: false, Message: "Error al listar usuarios"}
+		}
+
+		users := []string{}
+		for _, key := range keys {
+			users = append(users, string(key))
+		}
+		return api.Response{Success: true, Message: "Usuarios listados", Data: strings.Join(users, ",")}
+
+	case "delete":
+		// Delete a user
+		if req.Username == "" {
+			return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+		}
+		if err := s.db.Delete("auth", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar usuario"}
+		}
+		if err := s.db.Delete("roles", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar rol del usuario"}
+		}
+		if err := s.db.Delete("userdata", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar datos del usuario"}
+		}
+		return api.Response{Success: true, Message: "Usuario eliminado"}
+
+	case "modify":
+		// Modify a user's role
+		if req.Username == "" || req.NewRole == "" {
+			return api.Response{Success: false, Message: "Faltan datos para modificar usuario"}
+		}
+		if err := s.db.Put("roles", []byte(req.Username), []byte(req.NewRole)); err != nil {
+			return api.Response{Success: false, Message: "Error al modificar rol del usuario"}
+		}
+		return api.Response{Success: true, Message: "Rol del usuario modificado"}
+	}
+
+	return api.Response{Success: false, Message: "Acción no válida"}
 }
 
 // generateToken crea un token seguro usando valores aleatorios y SHA-256
