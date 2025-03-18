@@ -3,11 +3,12 @@
 package api
 
 const (
-	ActionRegister   = "register"
-	ActionLogin      = "login"
-	ActionFetchData  = "fetchData"
-	ActionUpdateData = "updateData"
-	ActionLogout     = "logout"
+	ActionRegister    = "register"
+	ActionLogin       = "login"
+	ActionFetchData   = "fetchData"
+	ActionUpdateData  = "updateData"
+	ActionLogout      = "logout"
+	ActionManageUsers = "manageUsers"
 )
 
 // Request y Response como antes
@@ -17,6 +18,8 @@ type Request struct {
 	Password string `json:"password,omitempty"`
 	Token    string `json:"token,omitempty"`
 	Data     string `json:"data,omitempty"`
+	Role     string `json:"role,omitempty"`
+	NewRole  string `json:"newRole,omitempty"`
 }
 
 type Response struct {

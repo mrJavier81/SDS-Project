@@ -9,17 +9,22 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync/atomic"
 
 	"prac/pkg/api"
 	"prac/pkg/store"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 )
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db           store.Store // base de datos
-	log          *log.Logger // logger para mensajes de error e información
-	tokenCounter int64       // contador para generar tokens
+	db  store.Store // base de datos
+	log *log.Logger // logger para mensajes de error e información
+	//tokenCounter int64       // contador para generar tokens
 }
 
 // Run inicia la base de datos y arranca el servidor HTTP.
@@ -34,6 +39,14 @@ func Run() error {
 	srv := &server{
 		db:  db,
 		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
+	}
+
+	// Inicializamos la lista de admins (esto es solo un ejemplo)
+	admins := []string{"Javier", "Saulet", "Fabian"}
+	for _, admin := range admins {
+		if err := srv.db.Put("admin", []byte(admin), []byte("true")); err != nil {
+			return fmt.Errorf("error inicializando lista de admins: %v", err)
+		}
 	}
 
 	// Al terminar, cerramos la base de datos
@@ -77,6 +90,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.updateData(req)
 	case api.ActionLogout:
 		res = s.logoutUser(req)
+	case api.ActionManageUsers: // New case for managing users
+		res = s.manageUsers(req)
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -86,10 +101,89 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
-// generateToken crea un token único incrementando un contador interno (inseguro)
+// manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
+// Solo los administradores pueden acceder a esta función.
+func (s *server) manageUsers(req api.Request) api.Response {
+	if req.Role != "admin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		// List all users
+		keys, err := s.db.ListKeys("auth")
+		if err != nil {
+			return api.Response{Success: false, Message: "Error al listar usuarios"}
+		}
+
+		users := []string{}
+		for _, key := range keys {
+			role, err := s.db.Get("roles", key)
+			if err != nil {
+				role = []byte("unknown") // Default to "unknown" if role is not found
+			}
+			users = append(users, fmt.Sprintf("%s (%s)", string(key), string(role)))
+		}
+		return api.Response{Success: true, Message: "Usuarios listados", Data: strings.Join(users, "\n")}
+
+	case "delete":
+		// Delete a user
+		if req.Username == "" {
+			return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+		}
+		if err := s.db.Delete("auth", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar usuario"}
+		}
+		if err := s.db.Delete("roles", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar rol del usuario"}
+		}
+		if err := s.db.Delete("userdata", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar datos del usuario"}
+		}
+		return api.Response{Success: true, Message: "Usuario eliminado"}
+
+	case "modify":
+		// Modify a user's role
+		if req.Username == "" || req.NewRole == "" {
+			return api.Response{Success: false, Message: "Faltan datos para modificar usuario"}
+		}
+		if err := s.db.Put("roles", []byte(req.Username), []byte(req.NewRole)); err != nil {
+			return api.Response{Success: false, Message: "Error al modificar rol del usuario"}
+		}
+		return api.Response{Success: true, Message: "Rol del usuario modificado"}
+	}
+
+	return api.Response{Success: false, Message: "Acción no válida"}
+}
+
+// generateToken crea un token seguro usando valores aleatorios y SHA-256
 func (s *server) generateToken() string {
-	id := atomic.AddInt64(&s.tokenCounter, 1) // atomic es necesario al haber paralelismo en las peticiones HTTP.
-	return fmt.Sprintf("token_%d", id)
+	// Generar 32 bytes aleatorios
+	randomBytes := make([]byte, 32)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		s.log.Println("Error generando token:", err)
+		return "" // En caso de error, devolvería un token vacío (puedes manejarlo mejor)
+	}
+
+	// Aplicar SHA-256
+	hash := sha256.Sum256(randomBytes)
+
+	// Convertir el hash en string hexadecimal
+	token := hex.EncodeToString(hash[:])
+
+	fmt.Println("Token generado:", token)
+
+	return token
+}
+
+// Función para hashear una contraseña usando bcrypt
+func hashPassword(password string) (string, error) {
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hashed), nil
 }
 
 // registerUser registra un nuevo usuario, si no existe.
@@ -101,7 +195,7 @@ func (s *server) registerUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
-	// Verificamos si ya existe el usuario en 'auth'
+	// Verificamos si ya existe el usuario
 	exists, err := s.userExists(req.Username)
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al verificar usuario"}
@@ -110,9 +204,30 @@ func (s *server) registerUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "El usuario ya existe"}
 	}
 
-	// Almacenamos la contraseña en el namespace 'auth' (clave=nombre, valor=contraseña)
-	if err := s.db.Put("auth", []byte(req.Username), []byte(req.Password)); err != nil {
+	// Determinar el rol del usuario
+	role := "user" // Por defecto, el rol es "user"
+	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	if err == nil && string(adminCheck) == "true" {
+		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
+	}
+
+	// Hashear la contraseña antes de almacenarla
+	hashedPassword, err := hashPassword(req.Password)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al cifrar la contraseña"}
+	}
+
+	fmt.Println("Contraseña normal:", req.Password)
+	fmt.Println("Contraseña hasheada:", hashedPassword)
+
+	// Guardamos el usuario con su hash en la base de datos
+	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
+	}
+
+	// Guardamos el rol del usuario en la base de datos
+	if err := s.db.Put("roles", []byte(req.Username), []byte(role)); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar rol del usuario"}
 	}
 
 	// Creamos una entrada vacía para los datos en 'userdata'
@@ -123,30 +238,41 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
-// loginUser valida credenciales en el namespace 'auth' y genera un token en 'sessions'.
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
-	// Recogemos la contraseña guardada en 'auth'
-	storedPass, err := s.db.Get("auth", []byte(req.Username))
+	// Recogemos la contraseña hasheada guardada en 'auth'
+	storedHash, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
-	// Comparamos
-	if string(storedPass) != req.Password {
+	// Comparamos la contraseña ingresada con el hash almacenado
+	err = bcrypt.CompareHashAndPassword(storedHash, []byte(req.Password))
+	if err != nil {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
-	// Generamos un nuevo token, lo guardamos en 'sessions'
+	// Generamos un nuevo token de sesión y lo guardamos
 	token := s.generateToken()
 	if err := s.db.Put("sessions", []byte(req.Username), []byte(token)); err != nil {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
-	return api.Response{Success: true, Message: "Login exitoso", Token: token}
+	// Obtenemos el rol del usuario desde la base de datos
+	role, err := s.db.Get("roles", []byte(req.Username))
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al obtener rol del usuario"}
+	}
+
+	return api.Response{
+		Success: true,
+		Message: "Login exitoso",
+		Token:   token,
+		Data:    string(role), // Incluimos el rol en el campo Data
+	}
 }
 
 // fetchData verifica el token y retorna el contenido del namespace 'userdata'.

@@ -1,0 +1,8 @@
+# Ignore executable files
+*.exe
+*.out
+*.bin
+*.db
+*.out
+
+
