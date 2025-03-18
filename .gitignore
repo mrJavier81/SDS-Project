@@ -3,6 +3,6 @@
 *.out
 *.bin
 *.db
-*.out
 
+data/server.db
 

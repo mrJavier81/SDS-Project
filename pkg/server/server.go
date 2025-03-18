@@ -155,6 +155,16 @@ func (s *server) manageUsers(req api.Request) api.Response {
 		if req.Username == "" || req.NewRole == "" {
 			return api.Response{Success: false, Message: "Faltan datos para modificar usuario"}
 		}
+
+		// Check if the user exists
+		exists, error := s.userExists(req.Username)
+		if error != nil {
+			return api.Response{Success: false, Message: "Error al verificar usuario"}
+		}
+		if !exists {
+			return api.Response{Success: false, Message: "El usuario no existe"}
+		}
+
 		// Check if the new role is valid
 		_, err := s.db.Get("roles", []byte(req.NewRole))
 		if err != nil {
