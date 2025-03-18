@@ -49,6 +49,14 @@ func Run() error {
 		}
 	}
 
+	// Al crear un nuevo rol, añadidlo a esta lista
+	rolesValidos := []string{"admin", "user"}
+	for _, role := range rolesValidos {
+		if err := srv.db.Put("roles", []byte(role), []byte("")); err != nil {
+			return fmt.Errorf("error inicializando roles: %v", err)
+		}
+	}
+
 	// Al terminar, cerramos la base de datos
 	defer srv.db.Close()
 
@@ -147,6 +155,12 @@ func (s *server) manageUsers(req api.Request) api.Response {
 		if req.Username == "" || req.NewRole == "" {
 			return api.Response{Success: false, Message: "Faltan datos para modificar usuario"}
 		}
+		// Check if the new role is valid
+		_, err := s.db.Get("roles", []byte(req.NewRole))
+		if err != nil {
+			return api.Response{Success: false, Message: "Rol no válido"}
+		}
+		// Update the user's role
 		if err := s.db.Put("roles", []byte(req.Username), []byte(req.NewRole)); err != nil {
 			return api.Response{Success: false, Message: "Error al modificar rol del usuario"}
 		}
