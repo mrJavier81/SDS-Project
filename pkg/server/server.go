@@ -16,6 +16,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -194,7 +196,7 @@ func (s *server) generateToken() string {
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	fmt.Println("Token generado:", token)
+	print("Token generado: ", token, "\n")
 
 	return token
 }
@@ -224,8 +226,14 @@ func (s *server) registerUser(req api.Request) api.Response {
 		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
+	// Hash the password using bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al hashear la contraseña"}
+	}
+
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), []byte(req.Password)); err != nil {
+	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
@@ -242,20 +250,20 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
+// loginUser maneja el inicio de sesión de un usuario
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	password, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
-
-	if string(password) != req.Password {
+	if !verifyPassword(string(hashedPassword), req.Password) {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
@@ -364,4 +372,9 @@ func (s *server) isTokenValid(username, token string) bool {
 		return false
 	}
 	return string(storedToken) == token
+}
+
+func verifyPassword(hashedPassword, password string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
 }
