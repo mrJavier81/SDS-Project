@@ -2,6 +2,7 @@
 *.exe
 *.out
 *.bin
-data/*.db
-*.out
-prac
+*.db
+
+data/server.db
+
