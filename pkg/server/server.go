@@ -41,16 +41,16 @@ func Run() error {
 		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
 	}
 
-	// Inicializamos la lista de admins (esto es solo un ejemplo)
-	admins := []string{"Javier", "Saulet", "Fabian"}
-	for _, admin := range admins {
-		if err := srv.db.Put("admin", []byte(admin), []byte("true")); err != nil {
-			return fmt.Errorf("error inicializando lista de admins: %v", err)
+	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
+	superadmins := []string{"Mirri", "Saulet", "Fabix"}
+	for _, superadmin := range superadmins {
+		if err := srv.db.Put("superadmin", []byte(superadmin), []byte("true")); err != nil {
+			return fmt.Errorf("error inicializando lista de superadmins: %v", err)
 		}
 	}
 
 	// Al crear un nuevo rol, añadidlo a esta lista
-	rolesValidos := []string{"admin", "user"}
+	rolesValidos := []string{"superadmin", "admin", "user"}
 	for _, role := range rolesValidos {
 		if err := srv.db.Put("roles", []byte(role), []byte("")); err != nil {
 			return fmt.Errorf("error inicializando roles: %v", err)

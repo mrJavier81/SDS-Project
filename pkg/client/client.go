@@ -212,7 +212,8 @@ func (c *client) registerUser() {
 		if loginRes.Success {
 			c.currentUser = username
 			c.authToken = loginRes.Token
-			fmt.Println("Login automático exitoso. Token guardado.")
+			c.userRole = loginRes.Data
+			fmt.Printf("Login automático como %v exitoso. Token guardado.\n", c.userRole)
 		} else {
 			fmt.Println("No se ha podido hacer login automático:", loginRes.Message)
 		}
