@@ -62,6 +62,7 @@ func (c *client) runLoop() {
 		} else {
 			// Usuario logueado: Ver datos, Actualizar datos, Logout, Salir
 			options = []string{
+				"Ver votaciones",
 				"Ver datos",
 				"Actualizar datos",
 				"Cerrar sesión",
@@ -100,13 +101,17 @@ func (c *client) runLoop() {
 			case 3:
 				c.logoutUser()
 			case 4:
-				if c.userRole == "admin" {
+				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
 				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
 					c.log.Println("Saliendo del cliente...")
 					return
 				}
 			case 5:
+				if c.userRole == "admin" || c.userRole == "superadmin" {
+				}
+
+			case 6:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -116,6 +121,12 @@ func (c *client) runLoop() {
 		// Pausa para que el usuario vea resultados.
 		ui.Pause("Pulsa [Enter] para continuar...")
 	}
+}
+
+func (c *client) administrarVotaciones() {
+	ui.ClearScreen()
+	fmt.Println("** Administrar votaciones **")
+
 }
 
 func (c *client) administrarUsuarios() {
