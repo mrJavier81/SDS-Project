@@ -13,8 +13,6 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -201,15 +199,6 @@ func (s *server) generateToken() string {
 	return token
 }
 
-// Función para hashear una contraseña usando bcrypt
-func hashPassword(password string) (string, error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashed), nil
-}
-
 // registerUser registra un nuevo usuario, si no existe.
 // - Guardamos la contraseña en el namespace 'auth'
 // - Creamos entrada vacía en 'userdata' para el usuario
@@ -235,17 +224,8 @@ func (s *server) registerUser(req api.Request) api.Response {
 		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
-	// Hashear la contraseña antes de almacenarla
-	hashedPassword, err := hashPassword(req.Password)
-	if err != nil {
-		return api.Response{Success: false, Message: "Error al cifrar la contraseña"}
-	}
-
-	fmt.Println("Contraseña normal:", req.Password)
-	fmt.Println("Contraseña hasheada:", hashedPassword)
-
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
+	if err := s.db.Put("auth", []byte(req.Username), []byte(req.Password)); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
@@ -268,14 +248,14 @@ func (s *server) loginUser(req api.Request) api.Response {
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	storedHash, err := s.db.Get("auth", []byte(req.Username))
+	password, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
-	err = bcrypt.CompareHashAndPassword(storedHash, []byte(req.Password))
-	if err != nil {
+
+	if string(password) != req.Password {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
