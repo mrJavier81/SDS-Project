@@ -68,7 +68,11 @@ func (c *client) runLoop() {
 				"Cerrar sesión",
 			}
 
-			if c.userRole == "admin" {
+			if c.userRole == "admin" || c.userRole == "superadmin" {
+				options = append(options, "Administrar votaciones")
+			}
+
+			if c.userRole == "superadmin" {
 				options = append(options, "Administrar usuarios")
 			}
 
@@ -109,6 +113,9 @@ func (c *client) runLoop() {
 				}
 			case 5:
 				if c.userRole == "admin" || c.userRole == "superadmin" {
+					c.administrarVotaciones()
+				} else {
+					fmt.Println("No tienes permisos para administrar votaciones.")
 				}
 
 			case 6:

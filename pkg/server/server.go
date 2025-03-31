@@ -22,8 +22,9 @@ import (
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db  store.Store // base de datos
-	log *log.Logger // logger para mensajes de error e información
+	db    store.Store      // base de datos
+	log   *log.Logger      // logger para mensajes de error e información
+	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
 	//tokenCounter int64       // contador para generar tokens
 }
 
@@ -100,6 +101,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.logoutUser(req)
 	case api.ActionManageUsers: // New case for managing users
 		res = s.manageUsers(req)
+	case "polls":
+		res = s.managePolls(req)
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -107,6 +110,65 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// Enviamos la respuesta en formato JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// /////////////////////////////////////////////////////////////
+// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
+// /////////////////////////////////////////////////////////////
+func (s *server) managePolls(req api.Request) api.Response {
+	// Solo los administradores pueden gestionar encuestas
+	if req.Role != "admin" || req.Role != "superadmin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		return s.listPolls()
+	case "delete":
+		return s.deletePoll(req)
+	case "create":
+		return s.createPoll(req)
+	default:
+		return api.Response{Success: false, Message: "Acción no válida"}
+	}
+}
+
+func (s *server) crearEncuestaMenu()
+
+func (s *server) createPoll(req api.Request) api.Response {
+	// Crear una nueva encuesta
+	if req.Question == "" || len(req.Options) == 0 {
+		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
+	}
+
+	poll := NewPoll(req.PollID, req.Question, req.Options)
+	s.polls[req.PollID] = poll
+
+	return api.Response{Success: true, Message: "Encuesta creada", Data: poll}
+}
+
+func (s *server) deletePoll(req api.Request) api.Response {
+	// Eliminar encuesta por ID
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	// Aquí se eliminaría la encuesta por ID (no implementado)
+	return api.Response{Success: true, Message: "Encuesta eliminada"}
+}
+
+func (s *server) listPolls() api.Response {
+	// Listar encuestas activas
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	pollList := "Encuestas activas:\n"
+	for id, poll := range s.polls {
+
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+	}
+	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
