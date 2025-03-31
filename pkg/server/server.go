@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -101,8 +102,13 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.logoutUser(req)
 	case api.ActionManageUsers: // New case for managing users
 		res = s.manageUsers(req)
-	case "polls":
-		res = s.managePolls(req)
+	case api.ActionFetchPolls:
+		res = s.listPolls()
+	case api.ActionCreatePoll:
+		res = s.createPoll(req)
+	case api.ActionVote:
+		res = s.vote(req)
+
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -133,18 +139,25 @@ func (s *server) managePolls(req api.Request) api.Response {
 	}
 }
 
-func (s *server) crearEncuestaMenu()
-
 func (s *server) createPoll(req api.Request) api.Response {
 	// Crear una nueva encuesta
 	if req.Question == "" || len(req.Options) == 0 {
 		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
 	}
+	duracionHoras, err := strconv.Atoi(req.Data) // Duración de la encuesta en horas
+	if err != nil {
+		return api.Response{Success: false, Message: "Duración inválida"}
+	}
+	creador := req.Username // Usuario que crea la encuesta
 
-	poll := NewPoll(req.PollID, req.Question, req.Options)
+	poll := NewPoll(req.PollID, req.Question, req.Options, duracionHoras, creador)
+	if poll == nil {
+		return api.Response{Success: false, Message: "Error al crear la encuesta"}
+	}
+
 	s.polls[req.PollID] = poll
 
-	return api.Response{Success: true, Message: "Encuesta creada", Data: poll}
+	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
 }
 
 func (s *server) deletePoll(req api.Request) api.Response {
@@ -169,6 +182,24 @@ func (s *server) listPolls() api.Response {
 		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
+}
+
+func (s *server) vote(req api.Request) api.Response {
+	// Votar en una encuesta
+	if req.PollID == "" || req.Option == "" {
+		return api.Response{Success: false, Message: "Faltan datos para votar"}
+	}
+
+	poll, exists := s.polls[req.PollID]
+	if !exists {
+		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	if err := poll.Vote(req.Option); err != nil {
+		return api.Response{Success: false, Message: err.Error()}
+	}
+
+	return api.Response{Success: true, Message: "Voto registrado"}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.

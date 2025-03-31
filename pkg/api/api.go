@@ -9,6 +9,10 @@ const (
 	ActionUpdateData  = "updateData"
 	ActionLogout      = "logout"
 	ActionManageUsers = "manageUsers"
+	ActionCreatePoll  = "createPoll"
+	ActionVote        = "vote"
+	ActionFetchPolls  = "fetchPolls"
+	ActionDeletePoll  = "deletePoll"
 )
 
 // Request y Response como antes

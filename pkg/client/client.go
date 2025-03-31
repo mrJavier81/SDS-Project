@@ -99,26 +99,28 @@ func (c *client) runLoop() {
 			// Caso logueado
 			switch choice {
 			case 1:
-				c.fetchData()
+				c.verVotaciones()
 			case 2:
-				c.updateData()
+				c.fetchData()
 			case 3:
-				c.logoutUser()
+				c.updateData()
 			case 4:
+				c.logoutUser()
+			case 5:
 				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
 				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
 					c.log.Println("Saliendo del cliente...")
 					return
 				}
-			case 5:
+			case 6:
 				if c.userRole == "admin" || c.userRole == "superadmin" {
 					c.administrarVotaciones()
 				} else {
 					fmt.Println("No tienes permisos para administrar votaciones.")
 				}
 
-			case 6:
+			case 7:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -134,6 +136,64 @@ func (c *client) administrarVotaciones() {
 	ui.ClearScreen()
 	fmt.Println("** Administrar votaciones **")
 
+}
+
+func (c *client) verVotaciones() {
+	ui.ClearScreen()
+	fmt.Println("** Ver votaciones **")
+
+	options := []string{
+		"Ver votaciones activas",
+		"Ver votaciones en las que participas",
+		"Ver votaciones pasadas",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de votación", options)
+	switch choice {
+	case 1:
+		// Ver votaciones activas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones activas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 2:
+		// Ver votaciones en las que participas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones en las que participas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 3:
+		// Ver votaciones pasadas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones pasadas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 4:
+		// Volver al menú principal
+		return
+	}
+
+	ui.Pause("Pulsa [Enter] para continuar...")
+	c.verVotaciones()
 }
 
 func (c *client) administrarUsuarios() {
