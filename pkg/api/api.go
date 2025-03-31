@@ -13,6 +13,7 @@ const (
 	ActionVote        = "vote"
 	ActionFetchPolls  = "fetchPolls"
 	ActionDeletePoll  = "deletePoll"
+	ActionModifyPoll  = "modifyPoll"
 )
 
 // Request y Response como antes

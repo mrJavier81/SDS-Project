@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"prac/pkg/api"
 	"prac/pkg/ui"
@@ -136,6 +137,70 @@ func (c *client) administrarVotaciones() {
 	ui.ClearScreen()
 	fmt.Println("** Administrar votaciones **")
 
+	options := []string{
+		"Crear votación",
+		"Modificar votación",
+		"Eliminar votación",
+		"Ver resultados de votación",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de administración", options)
+	switch choice {
+	case 1:
+		// Crear votación
+		question := ui.ReadInput("Pregunta de la votación")
+		options := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
+		duration := ui.ReadInput("Duración de la votación (en horas)")
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionCreatePoll,
+			Role:     c.userRole,
+			Question: question,
+			Options:  options,
+			Data:     duration,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 2:
+		// Modificar votación
+		pollID := ui.ReadInput("ID de la votación a modificar")
+		newQuestion := ui.ReadInput("Nueva pregunta de la votación")
+		newOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
+
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionModifyPoll,
+			Role:     c.userRole,
+			PollID:   pollID,
+			Question: newQuestion,
+			Options:  newOptions,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 3:
+		// Eliminar votación
+		pollID := ui.ReadInput("ID de la votación a eliminar")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionDeletePoll,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 4:
+		// Ver resultados de votación
+		pollID := ui.ReadInput("ID de la votación a ver resultados")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		if res.Success {
+			fmt.Println("Resultados de la votación:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 5:
+		// Volver al menú principal
+		return
+	}
 }
 
 func (c *client) verVotaciones() {
