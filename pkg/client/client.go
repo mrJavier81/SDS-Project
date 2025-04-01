@@ -118,15 +118,21 @@ func (c *client) runLoop() {
 			case 5:
 				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
+				} else if c.userRole == "admin" {
+
+					c.administrarVotaciones()
+
 				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
 					c.log.Println("Saliendo del cliente...")
 					return
 				}
 			case 6:
-				if c.userRole == "admin" || c.userRole == "superadmin" {
+				if c.userRole == "superadmin" {
 					c.administrarVotaciones()
 				} else {
-					fmt.Println("No tienes permisos para administrar votaciones.")
+					c.log.Println("Saliendo del cliente...")
+
+					return
 				}
 
 			case 7:
