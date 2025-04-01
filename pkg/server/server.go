@@ -39,8 +39,9 @@ func Run() error {
 
 	// Creamos nuestro servidor con su logger con prefijo 'srv'
 	srv := &server{
-		db:  db,
-		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		db:    db,
+		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		polls: make(map[string]*Poll),
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -179,7 +180,7 @@ func (s *server) listPolls() api.Response {
 	pollList := "Encuestas activas:\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %s, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
