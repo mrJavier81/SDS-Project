@@ -579,8 +579,17 @@ func encryptData(c *client, data string) ([]byte, []byte, error) {
 	return nonce, cipherText, nil
 }
 
-// Descifrar datos con AES-256 GCM
 func decryptData(c *client, nonce, cipherText []byte) (string, error) {
+	// Verificar que cipherText no sea nil o vacío
+	if cipherText == nil || len(cipherText) == 0 {
+		return "", nil
+	}
+
+	// Verificar que nonce tenga la longitud correcta (12 bytes para AES-GCM)
+	if len(nonce) != 12 {
+		return "", fmt.Errorf("invalid nonce length: got %d, expected 12", len(nonce))
+	}
+
 	key := deriveKey(c)
 
 	block, err := aes.NewCipher(key)
