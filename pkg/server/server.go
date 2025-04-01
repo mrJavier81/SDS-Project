@@ -13,12 +13,13 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+
 	"strconv"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -290,18 +291,9 @@ func (s *server) generateToken() string {
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	fmt.Println("Token generado:", token)
+	print("Token generado: ", token, "\n")
 
 	return token
-}
-
-// Función para hashear una contraseña usando bcrypt
-func hashPassword(password string) (string, error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashed), nil
 }
 
 // registerUser registra un nuevo usuario, si no existe.
@@ -329,17 +321,14 @@ func (s *server) registerUser(req api.Request) api.Response {
 		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
-	// Hashear la contraseña antes de almacenarla
-	hashedPassword, err := hashPassword(req.Password)
+	// Hash the password using bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al cifrar la contraseña"}
+		return api.Response{Success: false, Message: "Error al hashear la contraseña"}
 	}
 
-	fmt.Println("Contraseña normal:", req.Password)
-	fmt.Println("Contraseña hasheada:", hashedPassword)
-
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
+	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
@@ -356,20 +345,20 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
+// loginUser maneja el inicio de sesión de un usuario
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	storedHash, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
-	err = bcrypt.CompareHashAndPassword(storedHash, []byte(req.Password))
-	if err != nil {
+	if !verifyPassword(string(hashedPassword), req.Password) {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
@@ -478,4 +467,9 @@ func (s *server) isTokenValid(username, token string) bool {
 		return false
 	}
 	return string(storedToken) == token
+}
+
+func verifyPassword(hashedPassword, password string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
 }

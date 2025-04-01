@@ -4,6 +4,7 @@ package client
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,11 @@ import (
 
 	"prac/pkg/api"
 	"prac/pkg/ui"
+
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 )
 
 // client estructura interna no exportada que controla
@@ -23,6 +29,8 @@ type client struct {
 	currentUser string
 	authToken   string
 	userRole    string
+	kData       string
+	nonce       []byte
 }
 
 // Run es la única función exportada de este paquete.
@@ -338,11 +346,17 @@ func (c *client) registerUser() {
 	username := ui.ReadInput("Nombre de usuario")
 	password := ui.ReadInput("Contraseña")
 
+	// Hash de la contraseña
+	kKey, kData := hashPassword(password)
+
+	// Guardamos kData para uso futuro
+	c.kData = kData
+
 	// Enviamos la acción al servidor
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionRegister,
 		Username: username,
-		Password: password,
+		Password: kKey, // Enviamos el hash determinista de la primera mitad
 	})
 
 	// Mostramos resultado
@@ -356,8 +370,12 @@ func (c *client) registerUser() {
 		loginRes := c.sendRequest(api.Request{
 			Action:   api.ActionLogin,
 			Username: username,
-			Password: password,
+			Password: kKey, // Enviamos el hash determinista de la primera mitad
 		})
+
+		// Log the response for debugging
+		c.log.Printf("Respuesta de login automático: %+v\n", loginRes)
+
 		if loginRes.Success {
 			c.currentUser = username
 			c.authToken = loginRes.Token
@@ -377,10 +395,13 @@ func (c *client) loginUser() {
 	username := ui.ReadInput("Nombre de usuario")
 	password := ui.ReadInput("Contraseña")
 
+	// Hash de la contraseña
+	kKey, _ := hashPassword(password)
+
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionLogin,
 		Username: username,
-		Password: password,
+		Password: kKey,
 	})
 
 	fmt.Println("Éxito:", res.Success)
@@ -420,6 +441,18 @@ func (c *client) fetchData() {
 	// Si fue exitoso, mostramos la data recibida
 	if res.Success {
 		fmt.Println("Tus datos:", res.Data)
+		// Decode the received data from hex
+		encryptedData, err := hex.DecodeString(res.Data)
+		if err != nil {
+			fmt.Println("Error al decodificar los datos:", err)
+			return
+		}
+		descifrado, err := decryptData(c, c.nonce, encryptedData)
+		if err != nil {
+			fmt.Println("Error al descifrar los datos:", err)
+			return
+		}
+		fmt.Println("Descifrado:", descifrado)
 	}
 }
 
@@ -436,12 +469,25 @@ func (c *client) updateData() {
 	// Leemos la nueva Data
 	newData := ui.ReadInput("Introduce el contenido que desees almacenar")
 
+	// Ciframos newData con kData de usuario
+	nonce, encryptedData, err := encryptData(c, newData)
+
+	c.nonce = nonce
+
+	if err != nil {
+		fmt.Println("Error al cifrar los datos:", err)
+		return
+	}
+
+	// Encode the encrypted data to hex
+	encodedData := hex.EncodeToString(encryptedData)
+
 	// Enviamos la solicitud de actualización
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionUpdateData,
 		Username: c.currentUser,
 		Token:    c.authToken,
-		Data:     newData,
+		Data:     encodedData,
 	})
 
 	fmt.Println("Éxito:", res.Success)
@@ -492,4 +538,80 @@ func (c *client) sendRequest(req api.Request) api.Response {
 	var res api.Response
 	_ = json.Unmarshal(body, &res)
 	return res
+}
+
+// HashPassword hashea la contraseña completa con SHA-256
+func hashPassword(password string) (string, string) {
+	hash := sha256.Sum256([]byte(password))
+
+	hashedPassword := hex.EncodeToString(hash[:])
+
+	// Dividimos la contraseña en dos partes
+	mid := len(hashedPassword) / 2
+	kKey := hashedPassword[:mid]  // Primera mitad (se almacena en el servidor)
+	kData := hashedPassword[mid:] // Segunda mitad (se usa en el cliente)
+
+	return kKey, kData
+}
+
+// Derivamos una clave AES-256 de kData
+func deriveKey(c *client) []byte {
+	hash := sha256.Sum256([]byte(c.kData)) // 32 bytes (256 bits)
+	return hash[:]
+}
+
+// Cifrar datos con AES-256 GCM
+func encryptData(c *client, data string) ([]byte, []byte, error) {
+	key := deriveKey(c)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nonce := make([]byte, 12) // GCM estándar usa 12 bytes de nonce
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Cifrado con GCM, incluye el tag de autenticación
+	cipherText := aesGCM.Seal(nil, nonce, []byte(data), nil)
+
+	return nonce, cipherText, nil
+}
+
+func decryptData(c *client, nonce, cipherText []byte) (string, error) {
+	// Verificar que cipherText no sea nil o vacío
+	if cipherText == nil || len(cipherText) == 0 {
+		return "", nil
+	}
+
+	// Verificar que nonce tenga la longitud correcta (12 bytes para AES-GCM)
+	if len(nonce) != 12 {
+		return "", fmt.Errorf("invalid nonce length: got %d, expected 12", len(nonce))
+	}
+
+	key := deriveKey(c)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	plainText, err := aesGCM.Open(nil, nonce, cipherText, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plainText), nil
 }
