@@ -4,15 +4,22 @@ package client
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"prac/pkg/api"
 	"prac/pkg/ui"
+
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 )
 
 // client estructura interna no exportada que controla
@@ -22,6 +29,8 @@ type client struct {
 	currentUser string
 	authToken   string
 	userRole    string
+	kData       string
+	nonce       []byte
 }
 
 // Run es la única función exportada de este paquete.
@@ -68,7 +77,11 @@ func (c *client) runLoop() {
 				"Cerrar sesión",
 			}
 
-			if c.userRole == "admin" {
+			if c.userRole == "admin" || c.userRole == "superadmin" {
+				options = append(options, "Administrar votaciones")
+			}
+
+			if c.userRole == "superadmin" {
 				options = append(options, "Administrar usuarios")
 			}
 
@@ -95,23 +108,28 @@ func (c *client) runLoop() {
 			// Caso logueado
 			switch choice {
 			case 1:
-				c.fetchData()
+				c.verVotaciones()
 			case 2:
-				c.updateData()
+				c.fetchData()
 			case 3:
-				c.logoutUser()
+				c.updateData()
 			case 4:
+				c.logoutUser()
+			case 5:
 				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
 				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
 					c.log.Println("Saliendo del cliente...")
 					return
 				}
-			case 5:
+			case 6:
 				if c.userRole == "admin" || c.userRole == "superadmin" {
+					c.administrarVotaciones()
+				} else {
+					fmt.Println("No tienes permisos para administrar votaciones.")
 				}
 
-			case 6:
+			case 7:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -127,6 +145,128 @@ func (c *client) administrarVotaciones() {
 	ui.ClearScreen()
 	fmt.Println("** Administrar votaciones **")
 
+	options := []string{
+		"Crear votación",
+		"Modificar votación",
+		"Eliminar votación",
+		"Ver resultados de votación",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de administración", options)
+	switch choice {
+	case 1:
+		// Crear votación
+		question := ui.ReadInput("Pregunta de la votación")
+		options := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
+		duration := ui.ReadInput("Duración de la votación (en horas)")
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionCreatePoll,
+			Role:     c.userRole,
+			Question: question,
+			Options:  options,
+			Data:     duration,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 2:
+		// Modificar votación
+		pollID := ui.ReadInput("ID de la votación a modificar")
+		newQuestion := ui.ReadInput("Nueva pregunta de la votación")
+		newOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
+
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionModifyPoll,
+			Role:     c.userRole,
+			PollID:   pollID,
+			Question: newQuestion,
+			Options:  newOptions,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 3:
+		// Eliminar votación
+		pollID := ui.ReadInput("ID de la votación a eliminar")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionDeletePoll,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 4:
+		// Ver resultados de votación
+		pollID := ui.ReadInput("ID de la votación a ver resultados")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		if res.Success {
+			fmt.Println("Resultados de la votación:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 5:
+		// Volver al menú principal
+		return
+	}
+}
+
+func (c *client) verVotaciones() {
+	ui.ClearScreen()
+	fmt.Println("** Ver votaciones **")
+
+	options := []string{
+		"Ver votaciones activas",
+		"Ver votaciones en las que participas",
+		"Ver votaciones pasadas",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de votación", options)
+	switch choice {
+	case 1:
+		// Ver votaciones activas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones activas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 2:
+		// Ver votaciones en las que participas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones en las que participas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 3:
+		// Ver votaciones pasadas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones pasadas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 4:
+		// Volver al menú principal
+		return
+	}
+
+	ui.Pause("Pulsa [Enter] para continuar...")
+	c.verVotaciones()
 }
 
 func (c *client) administrarUsuarios() {
@@ -200,11 +340,17 @@ func (c *client) registerUser() {
 	username := ui.ReadInput("Nombre de usuario")
 	password := ui.ReadInput("Contraseña")
 
+	// Hash de la contraseña
+	kKey, kData := hashPassword(password)
+
+	// Guardamos kData para uso futuro
+	c.kData = kData
+
 	// Enviamos la acción al servidor
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionRegister,
 		Username: username,
-		Password: password,
+		Password: kKey, // Enviamos el hash determinista de la primera mitad
 	})
 
 	// Mostramos resultado
@@ -218,8 +364,12 @@ func (c *client) registerUser() {
 		loginRes := c.sendRequest(api.Request{
 			Action:   api.ActionLogin,
 			Username: username,
-			Password: password,
+			Password: kKey, // Enviamos el hash determinista de la primera mitad
 		})
+
+		// Log the response for debugging
+		c.log.Printf("Respuesta de login automático: %+v\n", loginRes)
+
 		if loginRes.Success {
 			c.currentUser = username
 			c.authToken = loginRes.Token
@@ -239,10 +389,13 @@ func (c *client) loginUser() {
 	username := ui.ReadInput("Nombre de usuario")
 	password := ui.ReadInput("Contraseña")
 
+	// Hash de la contraseña
+	kKey, _ := hashPassword(password)
+
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionLogin,
 		Username: username,
-		Password: password,
+		Password: kKey,
 	})
 
 	fmt.Println("Éxito:", res.Success)
@@ -282,6 +435,18 @@ func (c *client) fetchData() {
 	// Si fue exitoso, mostramos la data recibida
 	if res.Success {
 		fmt.Println("Tus datos:", res.Data)
+		// Decode the received data from hex
+		encryptedData, err := hex.DecodeString(res.Data)
+		if err != nil {
+			fmt.Println("Error al decodificar los datos:", err)
+			return
+		}
+		descifrado, err := decryptData(c, c.nonce, encryptedData)
+		if err != nil {
+			fmt.Println("Error al descifrar los datos:", err)
+			return
+		}
+		fmt.Println("Descifrado:", descifrado)
 	}
 }
 
@@ -298,12 +463,25 @@ func (c *client) updateData() {
 	// Leemos la nueva Data
 	newData := ui.ReadInput("Introduce el contenido que desees almacenar")
 
+	// Ciframos newData con kData de usuario
+	nonce, encryptedData, err := encryptData(c, newData)
+
+	c.nonce = nonce
+
+	if err != nil {
+		fmt.Println("Error al cifrar los datos:", err)
+		return
+	}
+
+	// Encode the encrypted data to hex
+	encodedData := hex.EncodeToString(encryptedData)
+
 	// Enviamos la solicitud de actualización
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionUpdateData,
 		Username: c.currentUser,
 		Token:    c.authToken,
-		Data:     newData,
+		Data:     encodedData,
 	})
 
 	fmt.Println("Éxito:", res.Success)
@@ -354,4 +532,80 @@ func (c *client) sendRequest(req api.Request) api.Response {
 	var res api.Response
 	_ = json.Unmarshal(body, &res)
 	return res
+}
+
+// HashPassword hashea la contraseña completa con SHA-256
+func hashPassword(password string) (string, string) {
+	hash := sha256.Sum256([]byte(password))
+
+	hashedPassword := hex.EncodeToString(hash[:])
+
+	// Dividimos la contraseña en dos partes
+	mid := len(hashedPassword) / 2
+	kKey := hashedPassword[:mid]  // Primera mitad (se almacena en el servidor)
+	kData := hashedPassword[mid:] // Segunda mitad (se usa en el cliente)
+
+	return kKey, kData
+}
+
+// Derivamos una clave AES-256 de kData
+func deriveKey(c *client) []byte {
+	hash := sha256.Sum256([]byte(c.kData)) // 32 bytes (256 bits)
+	return hash[:]
+}
+
+// Cifrar datos con AES-256 GCM
+func encryptData(c *client, data string) ([]byte, []byte, error) {
+	key := deriveKey(c)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nonce := make([]byte, 12) // GCM estándar usa 12 bytes de nonce
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Cifrado con GCM, incluye el tag de autenticación
+	cipherText := aesGCM.Seal(nil, nonce, []byte(data), nil)
+
+	return nonce, cipherText, nil
+}
+
+func decryptData(c *client, nonce, cipherText []byte) (string, error) {
+	// Verificar que cipherText no sea nil o vacío
+	if cipherText == nil || len(cipherText) == 0 {
+		return "", nil
+	}
+
+	// Verificar que nonce tenga la longitud correcta (12 bytes para AES-GCM)
+	if len(nonce) != 12 {
+		return "", fmt.Errorf("invalid nonce length: got %d, expected 12", len(nonce))
+	}
+
+	key := deriveKey(c)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	plainText, err := aesGCM.Open(nil, nonce, cipherText, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plainText), nil
 }

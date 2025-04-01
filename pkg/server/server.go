@@ -13,17 +13,20 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+
+	"strconv"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db  store.Store // base de datos
-	log *log.Logger // logger para mensajes de error e información
+	db    store.Store      // base de datos
+	log   *log.Logger      // logger para mensajes de error e información
+	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
 	//tokenCounter int64       // contador para generar tokens
 }
 
@@ -100,6 +103,13 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.logoutUser(req)
 	case api.ActionManageUsers: // New case for managing users
 		res = s.manageUsers(req)
+	case api.ActionFetchPolls:
+		res = s.listPolls()
+	case api.ActionCreatePoll:
+		res = s.createPoll(req)
+	case api.ActionVote:
+		res = s.vote(req)
+
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -107,6 +117,90 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// Enviamos la respuesta en formato JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// /////////////////////////////////////////////////////////////
+// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
+// /////////////////////////////////////////////////////////////
+func (s *server) managePolls(req api.Request) api.Response {
+	// Solo los administradores pueden gestionar encuestas
+	if req.Role != "admin" || req.Role != "superadmin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		return s.listPolls()
+	case "delete":
+		return s.deletePoll(req)
+	case "create":
+		return s.createPoll(req)
+	default:
+		return api.Response{Success: false, Message: "Acción no válida"}
+	}
+}
+
+func (s *server) createPoll(req api.Request) api.Response {
+	// Crear una nueva encuesta
+	if req.Question == "" || len(req.Options) == 0 {
+		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
+	}
+	duracionHoras, err := strconv.Atoi(req.Data) // Duración de la encuesta en horas
+	if err != nil {
+		return api.Response{Success: false, Message: "Duración inválida"}
+	}
+	creador := req.Username // Usuario que crea la encuesta
+
+	poll := NewPoll(req.PollID, req.Question, req.Options, duracionHoras, creador)
+	if poll == nil {
+		return api.Response{Success: false, Message: "Error al crear la encuesta"}
+	}
+
+	s.polls[req.PollID] = poll
+
+	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
+}
+
+func (s *server) deletePoll(req api.Request) api.Response {
+	// Eliminar encuesta por ID
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	// Aquí se eliminaría la encuesta por ID (no implementado)
+	return api.Response{Success: true, Message: "Encuesta eliminada"}
+}
+
+func (s *server) listPolls() api.Response {
+	// Listar encuestas activas
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	pollList := "Encuestas activas:\n"
+	for id, poll := range s.polls {
+
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+	}
+	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
+}
+
+func (s *server) vote(req api.Request) api.Response {
+	// Votar en una encuesta
+	if req.PollID == "" || req.Option == "" {
+		return api.Response{Success: false, Message: "Faltan datos para votar"}
+	}
+
+	poll, exists := s.polls[req.PollID]
+	if !exists {
+		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	if err := poll.Vote(req.Option); err != nil {
+		return api.Response{Success: false, Message: err.Error()}
+	}
+
+	return api.Response{Success: true, Message: "Voto registrado"}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
@@ -196,18 +290,9 @@ func (s *server) generateToken() string {
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	fmt.Println("Token generado:", token)
+	print("Token generado: ", token, "\n")
 
 	return token
-}
-
-// Función para hashear una contraseña usando bcrypt
-func hashPassword(password string) (string, error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashed), nil
 }
 
 // registerUser registra un nuevo usuario, si no existe.
@@ -235,17 +320,14 @@ func (s *server) registerUser(req api.Request) api.Response {
 		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
-	// Hashear la contraseña antes de almacenarla
-	hashedPassword, err := hashPassword(req.Password)
+	// Hash the password using bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al cifrar la contraseña"}
+		return api.Response{Success: false, Message: "Error al hashear la contraseña"}
 	}
 
-	fmt.Println("Contraseña normal:", req.Password)
-	fmt.Println("Contraseña hasheada:", hashedPassword)
-
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
+	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
@@ -262,20 +344,20 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
+// loginUser maneja el inicio de sesión de un usuario
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	storedHash, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
-	err = bcrypt.CompareHashAndPassword(storedHash, []byte(req.Password))
-	if err != nil {
+	if !verifyPassword(string(hashedPassword), req.Password) {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
@@ -384,4 +466,9 @@ func (s *server) isTokenValid(username, token string) bool {
 		return false
 	}
 	return string(storedToken) == token
+}
+
+func verifyPassword(hashedPassword, password string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
 }
