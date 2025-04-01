@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"prac/pkg/api"
 	"prac/pkg/ui"
@@ -70,12 +71,17 @@ func (c *client) runLoop() {
 		} else {
 			// Usuario logueado: Ver datos, Actualizar datos, Logout, Salir
 			options = []string{
+				"Ver votaciones",
 				"Ver datos",
 				"Actualizar datos",
 				"Cerrar sesión",
 			}
 
-			if c.userRole == "admin" {
+			if c.userRole == "admin" || c.userRole == "superadmin" {
+				options = append(options, "Administrar votaciones")
+			}
+
+			if c.userRole == "superadmin" {
 				options = append(options, "Administrar usuarios")
 			}
 
@@ -102,19 +108,28 @@ func (c *client) runLoop() {
 			// Caso logueado
 			switch choice {
 			case 1:
-				c.fetchData()
+				c.verVotaciones()
 			case 2:
-				c.updateData()
+				c.fetchData()
 			case 3:
-				c.logoutUser()
+				c.updateData()
 			case 4:
-				if c.userRole == "admin" {
+				c.logoutUser()
+			case 5:
+				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
 				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
 					c.log.Println("Saliendo del cliente...")
 					return
 				}
-			case 5:
+			case 6:
+				if c.userRole == "admin" || c.userRole == "superadmin" {
+					c.administrarVotaciones()
+				} else {
+					fmt.Println("No tienes permisos para administrar votaciones.")
+				}
+
+			case 7:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -124,6 +139,134 @@ func (c *client) runLoop() {
 		// Pausa para que el usuario vea resultados.
 		ui.Pause("Pulsa [Enter] para continuar...")
 	}
+}
+
+func (c *client) administrarVotaciones() {
+	ui.ClearScreen()
+	fmt.Println("** Administrar votaciones **")
+
+	options := []string{
+		"Crear votación",
+		"Modificar votación",
+		"Eliminar votación",
+		"Ver resultados de votación",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de administración", options)
+	switch choice {
+	case 1:
+		// Crear votación
+		question := ui.ReadInput("Pregunta de la votación")
+		options := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
+		duration := ui.ReadInput("Duración de la votación (en horas)")
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionCreatePoll,
+			Role:     c.userRole,
+			Question: question,
+			Options:  options,
+			Data:     duration,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 2:
+		// Modificar votación
+		pollID := ui.ReadInput("ID de la votación a modificar")
+		newQuestion := ui.ReadInput("Nueva pregunta de la votación")
+		newOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
+
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionModifyPoll,
+			Role:     c.userRole,
+			PollID:   pollID,
+			Question: newQuestion,
+			Options:  newOptions,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 3:
+		// Eliminar votación
+		pollID := ui.ReadInput("ID de la votación a eliminar")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionDeletePoll,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		fmt.Println("Resultado:", res.Message)
+	case 4:
+		// Ver resultados de votación
+		pollID := ui.ReadInput("ID de la votación a ver resultados")
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+			PollID: pollID,
+		})
+		if res.Success {
+			fmt.Println("Resultados de la votación:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 5:
+		// Volver al menú principal
+		return
+	}
+}
+
+func (c *client) verVotaciones() {
+	ui.ClearScreen()
+	fmt.Println("** Ver votaciones **")
+
+	options := []string{
+		"Ver votaciones activas",
+		"Ver votaciones en las que participas",
+		"Ver votaciones pasadas",
+		"Volver al menú principal",
+	}
+
+	choice := ui.PrintMenu("Opciones de votación", options)
+	switch choice {
+	case 1:
+		// Ver votaciones activas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones activas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 2:
+		// Ver votaciones en las que participas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones en las que participas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 3:
+		// Ver votaciones pasadas
+		res := c.sendRequest(api.Request{
+			Action: api.ActionFetchPolls,
+			Role:   c.userRole,
+		})
+		if res.Success {
+			fmt.Println("Votaciones pasadas:")
+			fmt.Println(res.Data)
+		} else {
+			fmt.Println("Error:", res.Message)
+		}
+	case 4:
+		// Volver al menú principal
+		return
+	}
+
+	ui.Pause("Pulsa [Enter] para continuar...")
+	c.verVotaciones()
 }
 
 func (c *client) administrarUsuarios() {
@@ -230,7 +373,8 @@ func (c *client) registerUser() {
 		if loginRes.Success {
 			c.currentUser = username
 			c.authToken = loginRes.Token
-			fmt.Println("Login automático exitoso. Token guardado.")
+			c.userRole = loginRes.Data
+			fmt.Printf("Login automático como %v exitoso. Token guardado.\n", c.userRole)
 		} else {
 			fmt.Println("No se ha podido hacer login automático:", loginRes.Message)
 		}
