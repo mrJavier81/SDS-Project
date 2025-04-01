@@ -123,7 +123,7 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 // /////////////////////////////////////////////////////////////
 func (s *server) managePolls(req api.Request) api.Response {
 	// Solo los administradores pueden gestionar encuestas
-	if req.Role != "admin" || req.Role != "superadmin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -205,7 +205,7 @@ func (s *server) vote(req api.Request) api.Response {
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
 // Solo los administradores pueden acceder a esta función.
 func (s *server) manageUsers(req api.Request) api.Response {
-	if req.Role != "admin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -323,9 +323,9 @@ func (s *server) registerUser(req api.Request) api.Response {
 
 	// Determinar el rol del usuario
 	role := "user" // Por defecto, el rol es "user"
-	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	adminCheck, err := s.db.Get("superadmin", []byte(req.Username))
 	if err == nil && string(adminCheck) == "true" {
-		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
+		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
 	// Hashear la contraseña antes de almacenarla
