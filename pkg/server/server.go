@@ -4,7 +4,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,17 +15,26 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
-	"golang.org/x/crypto/bcrypt"
-
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+
+	"strconv"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"golang.org/x/crypto/argon2"
+
+	"encoding/base64"
 )
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db  store.Store // base de datos
-	log *log.Logger // logger para mensajes de error e información
+	db    store.Store      // base de datos
+	log   *log.Logger      // logger para mensajes de error e información
+	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
 	//tokenCounter int64       // contador para generar tokens
 }
 
@@ -39,6 +50,22 @@ func Run() error {
 	srv := &server{
 		db:  db,
 		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
+	}
+
+	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
+	superadmins := []string{"Mirri", "Saulet", "Fabix"}
+	for _, superadmin := range superadmins {
+		if err := srv.db.Put("superadmin", []byte(superadmin), []byte("true")); err != nil {
+			return fmt.Errorf("error inicializando lista de superadmins: %v", err)
+		}
+	}
+
+	// Al crear un nuevo rol, añadidlo a esta lista
+	rolesValidos := []string{"superadmin", "admin", "user"}
+	for _, role := range rolesValidos {
+		if err := srv.db.Put("roles", []byte(role), []byte("")); err != nil {
+			return fmt.Errorf("error inicializando roles: %v", err)
+		}
 	}
 
 	// Al terminar, cerramos la base de datos
@@ -82,6 +109,15 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.updateData(req)
 	case api.ActionLogout:
 		res = s.logoutUser(req)
+	case api.ActionManageUsers: // New case for managing users
+		res = s.manageUsers(req)
+	case api.ActionFetchPolls:
+		res = s.listPolls()
+	case api.ActionCreatePoll:
+		res = s.createPoll(req)
+	case api.ActionVote:
+		res = s.vote(req)
+
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -89,6 +125,161 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// Enviamos la respuesta en formato JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// /////////////////////////////////////////////////////////////
+// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
+// /////////////////////////////////////////////////////////////
+func (s *server) managePolls(req api.Request) api.Response {
+	// Solo los administradores pueden gestionar encuestas
+	if req.Role != "admin" || req.Role != "superadmin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		return s.listPolls()
+	case "delete":
+		return s.deletePoll(req)
+	case "create":
+		return s.createPoll(req)
+	default:
+		return api.Response{Success: false, Message: "Acción no válida"}
+	}
+}
+
+func (s *server) createPoll(req api.Request) api.Response {
+	// Crear una nueva encuesta
+	if req.Question == "" || len(req.Options) == 0 {
+		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
+	}
+	duracionHoras, err := strconv.Atoi(req.Data) // Duración de la encuesta en horas
+	if err != nil {
+		return api.Response{Success: false, Message: "Duración inválida"}
+	}
+	creador := req.Username // Usuario que crea la encuesta
+
+	poll := NewPoll(req.PollID, req.Question, req.Options, duracionHoras, creador)
+	if poll == nil {
+		return api.Response{Success: false, Message: "Error al crear la encuesta"}
+	}
+
+	s.polls[req.PollID] = poll
+
+	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
+}
+
+func (s *server) deletePoll(req api.Request) api.Response {
+	// Eliminar encuesta por ID
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	// Aquí se eliminaría la encuesta por ID (no implementado)
+	return api.Response{Success: true, Message: "Encuesta eliminada"}
+}
+
+func (s *server) listPolls() api.Response {
+	// Listar encuestas activas
+	if len(s.polls) == 0 {
+		return api.Response{Success: false, Message: "No hay encuestas activas"}
+	}
+
+	pollList := "Encuestas activas:\n"
+	for id, poll := range s.polls {
+
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+	}
+	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
+}
+
+func (s *server) vote(req api.Request) api.Response {
+	// Votar en una encuesta
+	if req.PollID == "" || req.Option == "" {
+		return api.Response{Success: false, Message: "Faltan datos para votar"}
+	}
+
+	poll, exists := s.polls[req.PollID]
+	if !exists {
+		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	if err := poll.Vote(req.Option); err != nil {
+		return api.Response{Success: false, Message: err.Error()}
+	}
+
+	return api.Response{Success: true, Message: "Voto registrado"}
+}
+
+// manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
+// Solo los administradores pueden acceder a esta función.
+func (s *server) manageUsers(req api.Request) api.Response {
+	if req.Role != "admin" {
+		return api.Response{Success: false, Message: "Acceso denegado"}
+	}
+
+	switch req.Data {
+	case "list":
+		// List all users
+		keys, err := s.db.ListKeys("auth")
+		if err != nil {
+			return api.Response{Success: false, Message: "Error al listar usuarios"}
+		}
+
+		users := []string{}
+		for _, key := range keys {
+			role, err := s.db.Get("roles", key)
+			if err != nil {
+				role = []byte("unknown") // Default to "unknown" if role is not found
+			}
+			users = append(users, fmt.Sprintf("%s (%s)", string(key), string(role)))
+		}
+		return api.Response{Success: true, Message: "Usuarios listados", Data: strings.Join(users, "\n")}
+
+	case "delete":
+		// Delete a user
+		if req.Username == "" {
+			return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+		}
+		if err := s.db.Delete("auth", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar usuario"}
+		}
+		if err := s.db.Delete("roles", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar rol del usuario"}
+		}
+		if err := s.db.Delete("userdata", []byte(req.Username)); err != nil {
+			return api.Response{Success: false, Message: "Error al eliminar datos del usuario"}
+		}
+		return api.Response{Success: true, Message: "Usuario eliminado"}
+
+	case "modify":
+		// Modify a user's role
+		if req.Username == "" || req.NewRole == "" {
+			return api.Response{Success: false, Message: "Faltan datos para modificar usuario"}
+		}
+
+		// Check if the user exists
+		exists, error := s.userExists(req.Username)
+		if error != nil {
+			return api.Response{Success: false, Message: "Error al verificar usuario"}
+		}
+		if !exists {
+			return api.Response{Success: false, Message: "El usuario no existe"}
+		}
+
+		// Check if the new role is valid
+		_, err := s.db.Get("roles", []byte(req.NewRole))
+		if err != nil {
+			return api.Response{Success: false, Message: "Rol no válido"}
+		}
+		// Update the user's role
+		if err := s.db.Put("roles", []byte(req.Username), []byte(req.NewRole)); err != nil {
+			return api.Response{Success: false, Message: "Error al modificar rol del usuario"}
+		}
+		return api.Response{Success: true, Message: "Rol del usuario modificado"}
+	}
+
+	return api.Response{Success: false, Message: "Acción no válida"}
 }
 
 // generateToken crea un token seguro usando valores aleatorios y SHA-256
@@ -107,18 +298,9 @@ func (s *server) generateToken() string {
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	fmt.Println("Token generado:", token)
+	print("Token generado: ", token, "\n")
 
 	return token
-}
-
-// Función para hashear una contraseña usando bcrypt
-func hashPassword(password string) (string, error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashed), nil
 }
 
 // registerUser registra un nuevo usuario, si no existe.
@@ -139,18 +321,27 @@ func (s *server) registerUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "El usuario ya existe"}
 	}
 
-	// Hashear la contraseña antes de almacenarla
-	hashedPassword, err := hashPassword(req.Password)
-	if err != nil {
-		return api.Response{Success: false, Message: "Error al cifrar la contraseña"}
+	// Determinar el rol del usuario
+	role := "user" // Por defecto, el rol es "user"
+	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	if err == nil && string(adminCheck) == "true" {
+		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
-	fmt.Println("Contraseña normal:", req.Password)
-	fmt.Println("Contraseña hasheada:", hashedPassword)
+	// Hash the password using bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al hashear la contraseña"}
+	}
 
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), []byte(hashedPassword)); err != nil {
+	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
+	}
+
+	// Guardamos el rol del usuario en la base de datos
+	if err := s.db.Put("roles", []byte(req.Username), []byte(role)); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar rol del usuario"}
 	}
 
 	// Creamos una entrada vacía para los datos en 'userdata'
@@ -161,20 +352,20 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
+// loginUser maneja el inicio de sesión de un usuario
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	storedHash, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
-	err = bcrypt.CompareHashAndPassword(storedHash, []byte(req.Password))
-	if err != nil {
+	if !verifyPassword(string(hashedPassword), req.Password) {
 		return api.Response{Success: false, Message: "Credenciales inválidas"}
 	}
 
@@ -184,7 +375,18 @@ func (s *server) loginUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
-	return api.Response{Success: true, Message: "Login exitoso", Token: token}
+	// Obtenemos el rol del usuario desde la base de datos
+	role, err := s.db.Get("roles", []byte(req.Username))
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al obtener rol del usuario"}
+	}
+
+	return api.Response{
+		Success: true,
+		Message: "Login exitoso",
+		Token:   token,
+		Data:    string(role), // Incluimos el rol en el campo Data
+	}
 }
 
 // fetchData verifica el token y retorna el contenido del namespace 'userdata'.
@@ -197,16 +399,22 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Obtenemos los datos asociados al usuario desde 'userdata'
+	// Obtenemos los datos asociados al usuario
 	rawData, err := s.db.Get("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
 
+	// Desencriptamos los datos antes de devolverlos
+	decryptedData, err := decrypt(string(rawData), req.Username)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al desencriptar datos del usuario"}
+	}
+
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    string(rawData),
+		Data:    decryptedData,
 	}
 }
 
@@ -221,8 +429,13 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Escribimos el nuevo dato en 'userdata'
-	if err := s.db.Put("userdata", []byte(req.Username), []byte(req.Data)); err != nil {
+	// Encriptamos los datos del usuario antes de guardarlos
+	encryptedData, err := encrypt(req.Data, req.Username)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al encriptar datos del usuario"}
+	}
+
+	if err := s.db.Put("userdata", []byte(req.Username), []byte(encryptedData)); err != nil {
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
 
@@ -272,4 +485,69 @@ func (s *server) isTokenValid(username, token string) bool {
 		return false
 	}
 	return string(storedToken) == token
+}
+
+func verifyPassword(hashedPassword, password string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return err == nil
+}
+
+var encryptionSalt = []byte("saltsalt") // Debe tener 8 bytes mínimo. Idealmente fija o por usuario.
+
+func deriveKey(passphrase string) []byte {
+	return argon2.IDKey([]byte(passphrase), encryptionSalt, 1, 64*1024, 4, 32)
+}
+
+func encrypt(plaintext string, passphrase string) (string, error) {
+	key := deriveKey(passphrase)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := aesGCM.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func decrypt(ciphertextBase64 string, passphrase string) (string, error) {
+	key := deriveKey(passphrase)
+
+	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextBase64)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return "", errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
 }
