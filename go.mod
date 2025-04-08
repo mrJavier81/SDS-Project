@@ -1,6 +1,6 @@
 module prac
 
-go 1.23.6
+go 1.23
 
 require go.etcd.io/bbolt v1.4.0
 

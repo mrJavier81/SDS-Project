@@ -20,6 +20,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+
+	"golang.org/x/crypto/scrypt"
 )
 
 // client estructura interna no exportada que controla
@@ -30,7 +32,6 @@ type client struct {
 	authToken   string
 	userRole    string
 	kData       string
-	nonce       []byte
 }
 
 // Run es la única función exportada de este paquete.
@@ -382,6 +383,7 @@ func (c *client) registerUser() {
 }
 
 // loginUser pide credenciales y realiza un login en el servidor.
+// loginUser pide credenciales y realiza un login en el servidor.
 func (c *client) loginUser() {
 	ui.ClearScreen()
 	fmt.Println("** Inicio de sesión **")
@@ -390,7 +392,10 @@ func (c *client) loginUser() {
 	password := ui.ReadInput("Contraseña")
 
 	// Hash de la contraseña
-	kKey, _ := hashPassword(password)
+	kKey, kData := hashPassword(password)
+
+	// Guardamos kData para uso futuro (añadir esta línea)
+	c.kData = kData
 
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionLogin,
@@ -410,13 +415,11 @@ func (c *client) loginUser() {
 	}
 }
 
-// fetchData pide datos privados al servidor.
-// El servidor devuelve la data asociada al usuario logueado.
+// fetchData obtiene la data cifrada del servidor y la descifra.
 func (c *client) fetchData() {
 	ui.ClearScreen()
 	fmt.Println("** Obtener datos del usuario **")
 
-	// Chequeo básico de que haya sesión
 	if c.currentUser == "" || c.authToken == "" {
 		fmt.Println("No estás logueado. Inicia sesión primero.")
 		return
@@ -432,16 +435,27 @@ func (c *client) fetchData() {
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 
-	// Si fue exitoso, mostramos la data recibida
 	if res.Success {
 		fmt.Println("Tus datos:", res.Data)
-		// Decode the received data from hex
-		encryptedData, err := hex.DecodeString(res.Data)
+
+		// Decode the hex string
+		payload, err := hex.DecodeString(res.Data)
 		if err != nil {
 			fmt.Println("Error al decodificar los datos:", err)
 			return
 		}
-		descifrado, err := decryptData(c, c.nonce, encryptedData)
+
+		if len(payload) < 12 {
+			fmt.Println("Datos inválidos: falta el nonce")
+			return
+		}
+
+		// Extraer nonce y ciphertext
+		nonce := payload[:12]
+		encryptedData := payload[12:]
+
+		// Descifrar
+		descifrado, err := decryptData(c, nonce, encryptedData)
 		if err != nil {
 			fmt.Println("Error al descifrar los datos:", err)
 			return
@@ -465,16 +479,16 @@ func (c *client) updateData() {
 
 	// Ciframos newData con kData de usuario
 	nonce, encryptedData, err := encryptData(c, newData)
-
-	c.nonce = nonce
-
 	if err != nil {
 		fmt.Println("Error al cifrar los datos:", err)
 		return
 	}
 
-	// Encode the encrypted data to hex
-	encodedData := hex.EncodeToString(encryptedData)
+	// Concatenamos nonce + encryptedData
+	finalPayload := append(nonce, encryptedData...)
+
+	// Encode the full payload to hex
+	encodedData := hex.EncodeToString(finalPayload)
 
 	// Enviamos la solicitud de actualización
 	res := c.sendRequest(api.Request{
@@ -550,8 +564,13 @@ func hashPassword(password string) (string, string) {
 
 // Derivamos una clave AES-256 de kData
 func deriveKey(c *client) []byte {
-	hash := sha256.Sum256([]byte(c.kData)) // 32 bytes (256 bits)
-	return hash[:]
+	salt := []byte(c.currentUser) // Usamos el nombre de usuario como salt
+	key, err := scrypt.Key([]byte(c.kData), salt, 32768, 8, 1, 32)
+	if err != nil {
+		fmt.Println("Error al derivar la clave:", err)
+		return nil
+	}
+	return key
 }
 
 // Cifrar datos con AES-256 GCM
