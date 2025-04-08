@@ -4,7 +4,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +15,8 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,6 +24,10 @@ import (
 	"strconv"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"golang.org/x/crypto/argon2"
+
+	"encoding/base64"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -391,16 +399,22 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Obtenemos los datos asociados al usuario desde 'userdata'
+	// Obtenemos los datos asociados al usuario
 	rawData, err := s.db.Get("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
 
+	// Desencriptamos los datos antes de devolverlos
+	decryptedData, err := decrypt(string(rawData), req.Username)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al desencriptar datos del usuario"}
+	}
+
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    string(rawData),
+		Data:    decryptedData,
 	}
 }
 
@@ -415,8 +429,13 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Escribimos el nuevo dato en 'userdata'
-	if err := s.db.Put("userdata", []byte(req.Username), []byte(req.Data)); err != nil {
+	// Encriptamos los datos del usuario antes de guardarlos
+	encryptedData, err := encrypt(req.Data, req.Username)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al encriptar datos del usuario"}
+	}
+
+	if err := s.db.Put("userdata", []byte(req.Username), []byte(encryptedData)); err != nil {
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
 
@@ -471,4 +490,64 @@ func (s *server) isTokenValid(username, token string) bool {
 func verifyPassword(hashedPassword, password string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 	return err == nil
+}
+
+var encryptionSalt = []byte("saltsalt") // Debe tener 8 bytes mínimo. Idealmente fija o por usuario.
+
+func deriveKey(passphrase string) []byte {
+	return argon2.IDKey([]byte(passphrase), encryptionSalt, 1, 64*1024, 4, 32)
+}
+
+func encrypt(plaintext string, passphrase string) (string, error) {
+	key := deriveKey(passphrase)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := aesGCM.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func decrypt(ciphertextBase64 string, passphrase string) (string, error) {
+	key := deriveKey(passphrase)
+
+	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextBase64)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return "", errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
 }
