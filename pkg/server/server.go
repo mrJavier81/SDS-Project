@@ -48,8 +48,9 @@ func Run() error {
 
 	// Creamos nuestro servidor con su logger con prefijo 'srv'
 	srv := &server{
-		db:  db,
-		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		db:    db,
+		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		polls: make(map[string]*Poll),
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -132,7 +133,7 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 // /////////////////////////////////////////////////////////////
 func (s *server) managePolls(req api.Request) api.Response {
 	// Solo los administradores pueden gestionar encuestas
-	if req.Role != "admin" || req.Role != "superadmin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -188,7 +189,7 @@ func (s *server) listPolls() api.Response {
 	pollList := "Encuestas activas:\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %s, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
@@ -214,7 +215,7 @@ func (s *server) vote(req api.Request) api.Response {
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
 // Solo los administradores pueden acceder a esta función.
 func (s *server) manageUsers(req api.Request) api.Response {
-	if req.Role != "admin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -323,9 +324,9 @@ func (s *server) registerUser(req api.Request) api.Response {
 
 	// Determinar el rol del usuario
 	role := "user" // Por defecto, el rol es "user"
-	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	adminCheck, err := s.db.Get("superadmin", []byte(req.Username))
 	if err == nil && string(adminCheck) == "true" {
-		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
+		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
 	// Hash the password using bcrypt
