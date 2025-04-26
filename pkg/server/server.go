@@ -70,6 +70,15 @@ func Run() error {
 		}
 	}
 
+	if err := srv.initializeNextPollID(); err != nil {
+		return fmt.Errorf("error inicializando nextPollID: %v", err)
+	}
+
+	// Cargar las encuestas desde la base de datos
+	if err := srv.loadPolls(); err != nil {
+		return fmt.Errorf("error al cargar encuestas: %v", err)
+	}
+
 	// Al terminar, cerramos la base de datos
 	defer srv.db.Close()
 
@@ -129,9 +138,77 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
+// Cargar las encuestas desde la base de datos al mapa en memoria
+// Esta función se llama al iniciar el servidor y carga todas las encuestas
+func (s *server) loadPolls() error {
+	// Obtener todas las claves en el namespace "polls"
+	keys, err := s.db.ListKeys("polls")
+	if err != nil {
+		return fmt.Errorf("error al listar encuestas: %v", err)
+	}
+
+	// Recorrer las claves y cargar cada encuesta
+	for _, key := range keys {
+		// Obtener los datos de la encuesta desde la base de datos
+		data, err := s.db.Get("polls", key)
+		if err != nil {
+			return fmt.Errorf("error al obtener encuesta con ID %s: %v", string(key), err)
+		}
+
+		// Deserializar los datos en una estructura Poll
+		var poll Poll
+		if err := json.Unmarshal(data, &poll); err != nil {
+			return fmt.Errorf("error al deserializar encuesta con ID %s: %v", string(key), err)
+		}
+
+		// Añadir la encuesta al mapa en memoria
+		s.polls[string(key)] = &poll
+	}
+
+	return nil
+}
+
+func (s *server) initializeNextPollID() error {
+	// Intentar obtener el ID de la próxima encuesta desde la base de datos
+	data, err := s.db.Get("config", []byte("nextPollID"))
+	if err != nil {
+		// Si no existe la clave, inicializar el ID a 1
+		if strings.Contains(err.Error(), "clave no encontrada") {
+			s.nextPollID = 1
+			// Guardar el valor inicial en la base de datos
+			return s.saveNextPollID()
+		}
+		return fmt.Errorf("error al obtener nextPollID: %v", err)
+	}
+
+	// Convertir el valor recuperado a int64
+	nextPollID, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return fmt.Errorf("error al parsear nextPollID: %v", err)
+	}
+
+	// Asignar el valor al campo nextPollID del servidor
+	s.nextPollID = nextPollID
+	return nil
+}
+
 // /////////////////////////////////////////////////////////////
 // //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
 // /////////////////////////////////////////////////////////////
+
+// Esta funcion se encarga de cargar el ID de la próxima encuesta desde la base de datos
+func (s *server) saveNextPollID() error {
+	// Convertimos el valor de nextPollID a string
+	nextPollIDStr := strconv.FormatInt(s.nextPollID, 10)
+
+	// Guardamos el valor en la base de datos bajo el namespace "config" con la clave "nextPollID"
+	if err := s.db.Put("config", []byte("nextPollID"), []byte(nextPollIDStr)); err != nil {
+		return fmt.Errorf("error al guardar nextPollID en la base de datos: %v", err)
+	}
+
+	return nil
+}
+
 func (s *server) managePolls(req api.Request) api.Response {
 	// Solo los administradores pueden gestionar encuestas
 	if req.Role != "admin" && req.Role != "superadmin" {
@@ -151,7 +228,7 @@ func (s *server) managePolls(req api.Request) api.Response {
 }
 
 func (s *server) createPoll(req api.Request) api.Response {
-	// Crear una nueva encuesta
+	// Validar datos de entrada
 	if req.Question == "" || len(req.Options) == 0 {
 		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
 	}
@@ -161,12 +238,30 @@ func (s *server) createPoll(req api.Request) api.Response {
 	}
 	creador := req.Username // Usuario que crea la encuesta
 
-	poll := NewPoll(req.PollID, req.Question, req.Options, duracionHoras, creador)
+	// Generar un ID único para la encuesta
+	pollID := strconv.FormatInt(s.nextPollID, 10)
+	s.nextPollID++ // Incrementar el ID para la próxima encuesta
+	if err := s.saveNextPollID(); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar el siguiente ID de encuesta"}
+	}
+
+	// Crear la encuesta
+	poll := NewPoll(pollID, req.Question, req.Options, duracionHoras, creador)
 	if poll == nil {
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
 
-	s.polls[req.PollID] = poll
+	// Guardar la encuesta en la base de datos
+	pollData, err := json.Marshal(poll)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al serializar la encuesta"}
+	}
+	if err := s.db.Put("polls", []byte(pollID), pollData); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar la encuesta en la base de datos"}
+	}
+
+	// Añadir la encuesta al mapa en memoria
+	s.polls[pollID] = poll
 
 	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
 }
