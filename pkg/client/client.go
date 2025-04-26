@@ -77,12 +77,12 @@ func (c *client) runLoop() {
 				"Cerrar sesión",
 			}
 
-			if c.userRole == "admin" || c.userRole == "superadmin" {
-				options = append(options, "Administrar votaciones")
-			}
-
 			if c.userRole == "superadmin" {
 				options = append(options, "Administrar usuarios")
+			}
+
+			if c.userRole == "admin" || c.userRole == "superadmin" {
+				options = append(options, "Administrar votaciones")
 			}
 
 			options = append(options, "Salir")
@@ -166,12 +166,14 @@ func (c *client) administrarVotaciones() {
 		question := ui.ReadInput("Pregunta de la votación")
 		options := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
 		duration := ui.ReadInput("Duración de la votación (en horas)")
+		creador := c.currentUser
 		res := c.sendRequest(api.Request{
 			Action:   api.ActionCreatePoll,
 			Role:     c.userRole,
 			Question: question,
 			Options:  options,
 			Data:     duration,
+			Creador:  creador,
 		})
 		fmt.Println("Resultado:", res.Message)
 	case 2:
