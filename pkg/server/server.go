@@ -54,6 +54,18 @@ func Run() error {
 		polls: make(map[string]*Poll),
 	}
 
+	// Crear el bucket "config" si no existe
+	err = db.Put("config", []byte("init"), []byte("init"))
+	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
+		return fmt.Errorf("error al crear el bucket config: %v", err)
+	}
+
+	// Crear el bucket "config" si no existe
+	err = db.Put("polls", []byte("init"), []byte("init"))
+	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
+		return fmt.Errorf("error al crear el bucket config: %v", err)
+	}
+
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
 	superadmins := []string{"Mirri", "Saulet", "Fabix"}
 	for _, superadmin := range superadmins {
