@@ -600,7 +600,7 @@ func encryptData(c *client, data string) ([]byte, []byte, error) {
 
 func decryptData(c *client, nonce, cipherText []byte) (string, error) {
 	// Verificar que cipherText no sea nil o vacío
-	if cipherText == nil || len(cipherText) == 0 {
+	if len(cipherText) == 0 {
 		return "", nil
 	}
 
