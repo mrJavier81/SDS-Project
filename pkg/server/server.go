@@ -413,16 +413,19 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
 
-	// Desencriptamos los datos antes de devolverlos
-	decryptedData, err := decrypt(string(rawData), req.Username)
+	// Derivamos la clave de cifrado a partir del nombre de usuario
+	key := deriveKey(req.Username)
+
+	// Desciframos los datos antes de devolverlos
+	decryptedData, err := decryptHTTPS(rawData, key)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al desencriptar datos del usuario"}
+		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
 	}
 
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    decryptedData,
+		Data:    string(decryptedData),
 	}
 }
 
@@ -437,13 +440,17 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Encriptamos los datos del usuario antes de guardarlos
-	encryptedData, err := encrypt(req.Data, req.Username)
+	// Derivamos la clave de cifrado a partir del nombre de usuario
+	key := deriveKey(req.Username)
+
+	// Ciframos los datos del usuario antes de guardarlos
+	encryptedData, err := encryptHTTPS([]byte(req.Data), key)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al encriptar datos del usuario"}
+		return api.Response{Success: false, Message: "Error al cifrar datos del usuario"}
 	}
 
-	if err := s.db.Put("userdata", []byte(req.Username), []byte(encryptedData)); err != nil {
+	// Guardamos los datos cifrados en la base de datos
+	if err := s.db.Put("userdata", []byte(req.Username), encryptedData); err != nil {
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
 
@@ -558,4 +565,55 @@ func decrypt(ciphertextBase64 string, passphrase string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// encryptHTTPS cifra los datos utilizando AES-GCM y devuelve el ciphertext con el nonce adjunto.
+func encryptHTTPS(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el cifrador AES: %v", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el modo GCM: %v", err)
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize()) // Generar un nonce aleatorio
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("error generando nonce: %v", err)
+	}
+
+	// Cifrar los datos y adjuntar el nonce al principio del ciphertext
+	ciphertext := aesGCM.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// decryptHTTPS descifra los datos utilizando AES-GCM y devuelve el plaintext.
+func decryptHTTPS(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el cifrador AES: %v", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el modo GCM: %v", err)
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext demasiado corto")
+	}
+
+	// Separar el nonce del ciphertext
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+
+	// Descifrar los datos
+	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error descifrando datos: %v", err)
+	}
+
+	return plaintext, nil
 }
