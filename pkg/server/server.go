@@ -61,7 +61,7 @@ func Run() error {
 	}
 
 	// Crear el bucket "config" si no existe
-	err = db.Put("polls", []byte("init"), []byte("init"))
+	err = db.Put("polls", []byte("init"), []byte("[]"))
 	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
 		return fmt.Errorf("error al crear el bucket config: %v", err)
 	}
