@@ -38,7 +38,7 @@ type server struct {
 	//tokenCounter int64       // contador para generar tokens
 }
 
-// Run inicia la base de datos y arranca el servidor HTTP.
+// Run inicia la base de datos y arranca el servidor HTTPS.
 func Run() error {
 	// Abrimos la base de datos usando el motor bbolt
 	db, err := store.NewStore("bbolt", "data/server.db")
@@ -71,14 +71,22 @@ func Run() error {
 	// Al terminar, cerramos la base de datos
 	defer srv.db.Close()
 
-	// Construimos un mux y asociamos /api a nuestro apiHandler,
+	// Construimos un mux y asociamos /api a nuestro apiHandler
 	mux := http.NewServeMux()
 	mux.Handle("/api", http.HandlerFunc(srv.apiHandler))
 
-	// Iniciamos el servidor HTTP.
-	err = http.ListenAndServe(":8080", mux)
+	// Configuración de HTTPS
+	certFile := "cert.pem" // Ruta al certificado SSL
+	keyFile := "key.pem"   // Ruta a la clave privada
 
-	return err
+	// Iniciamos el servidor HTTPS
+	fmt.Println("Servidor HTTPS iniciado en https://localhost:8443")
+	err = http.ListenAndServeTLS(":8443", certFile, keyFile, mux)
+	if err != nil {
+		return fmt.Errorf("error iniciando servidor HTTPS: %v", err)
+	}
+
+	return nil
 }
 
 // apiHandler descodifica la solicitud JSON, la despacha
