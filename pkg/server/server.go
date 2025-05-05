@@ -4,9 +4,7 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,8 +13,6 @@ import (
 	"prac/pkg/api"
 	"prac/pkg/store"
 
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,10 +20,6 @@ import (
 	"strconv"
 
 	"golang.org/x/crypto/bcrypt"
-
-	"golang.org/x/crypto/argon2"
-
-	"encoding/base64"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -36,6 +28,7 @@ type server struct {
 	log   *log.Logger      // logger para mensajes de error e información
 	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
 	//tokenCounter int64       // contador para generar tokens
+	nextPollID int64 // ID para la próxima encuesta
 }
 
 // Run inicia la base de datos y arranca el servidor HTTPS.
@@ -48,8 +41,9 @@ func Run() error {
 
 	// Creamos nuestro servidor con su logger con prefijo 'srv'
 	srv := &server{
-		db:  db,
-		log: log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		db:    db,
+		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		polls: make(map[string]*Poll),
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -140,7 +134,7 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 // /////////////////////////////////////////////////////////////
 func (s *server) managePolls(req api.Request) api.Response {
 	// Solo los administradores pueden gestionar encuestas
-	if req.Role != "admin" || req.Role != "superadmin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -193,10 +187,10 @@ func (s *server) listPolls() api.Response {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
 	}
 
-	pollList := "Encuestas activas:\n"
+	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v\n", id, poll.Question, poll.Options)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
@@ -222,7 +216,7 @@ func (s *server) vote(req api.Request) api.Response {
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
 // Solo los administradores pueden acceder a esta función.
 func (s *server) manageUsers(req api.Request) api.Response {
-	if req.Role != "admin" {
+	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -331,9 +325,9 @@ func (s *server) registerUser(req api.Request) api.Response {
 
 	// Determinar el rol del usuario
 	role := "user" // Por defecto, el rol es "user"
-	adminCheck, err := s.db.Get("admin", []byte(req.Username))
+	adminCheck, err := s.db.Get("superadmin", []byte(req.Username))
 	if err == nil && string(adminCheck) == "true" {
-		role = "admin" // Si el usuario está en la lista de admins, asignar el rol "admin"
+		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
 
 	// Hash the password using bcrypt
@@ -407,7 +401,7 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Obtenemos los datos asociados al usuario
+	// Obtenemos los datos asociados al usuario desde 'userdata'
 	rawData, err := s.db.Get("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}

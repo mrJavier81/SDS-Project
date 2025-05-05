@@ -12,9 +12,9 @@ type Poll struct {
 	Question     string          // La pregunta de la encuesta
 	Options      map[string]int  // Opciones y sus conteos de votos
 	mu           sync.Mutex      // Mutex para manejar el acceso concurrente
-	fechaInicio  string          // Fecha de inicio de la encuesta
+	FechaInicio  string          // Fecha de inicio de la encuesta
 	fechaFin     string          // Fecha de fin de la encuesta
-	creador      string          // Usuario que creó la encuesta
+	Creador      string          // Usuario que creó la encuesta
 	estado       string          // Estado de la encuesta (abierta/cerrada)
 	participants map[string]bool // Registro de usuarios que han participado
 }
@@ -32,9 +32,9 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 		ID:           id,
 		Question:     question,
 		Options:      pollOptions,
-		fechaInicio:  fechaInicio,
+		FechaInicio:  fechaInicio,
 		fechaFin:     pollEndDate,
-		creador:      creador,
+		Creador:      creador,
 		estado:       "abierta",
 		participants: make(map[string]bool),
 	}
