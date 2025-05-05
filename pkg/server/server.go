@@ -54,16 +54,10 @@ func Run() error {
 		polls: make(map[string]*Poll),
 	}
 
-	// Crear el bucket "config" si no existe
-	err = db.Put("config", []byte("init"), []byte("init"))
+	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
+	err = db.Put("polls", []byte("init"), []byte("{}"))
 	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket config: %v", err)
-	}
-
-	// Crear el bucket "config" si no existe
-	err = db.Put("polls", []byte("init"), []byte("[]"))
-	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket config: %v", err)
+		return fmt.Errorf("error al crear el bucket polls: %v", err)
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -180,6 +174,11 @@ func (s *server) loadPolls() error {
 	return nil
 }
 
+// /////////////////////////////////////////////////////////////
+// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
+// /////////////////////////////////////////////////////////////
+
+// Obtenemos el ID de la próxima encuesta desde la base de datos, y si no existe, lo inicializamos a 1
 func (s *server) initializeNextPollID() error {
 	// Intentar obtener el ID de la próxima encuesta desde la base de datos
 	data, err := s.db.Get("config", []byte("nextPollID"))
@@ -203,10 +202,6 @@ func (s *server) initializeNextPollID() error {
 	s.nextPollID = nextPollID
 	return nil
 }
-
-// /////////////////////////////////////////////////////////////
-// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
-// /////////////////////////////////////////////////////////////
 
 // Esta funcion se encarga de cargar el ID de la próxima encuesta desde la base de datos
 func (s *server) saveNextPollID() error {
@@ -251,6 +246,7 @@ func (s *server) createPoll(req api.Request) api.Response {
 	creador := req.Username // Usuario que crea la encuesta
 
 	// Generar un ID único para la encuesta
+
 	pollID := strconv.FormatInt(s.nextPollID, 10)
 	s.nextPollID++ // Incrementar el ID para la próxima encuesta
 	if err := s.saveNextPollID(); err != nil {
