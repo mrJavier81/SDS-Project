@@ -55,9 +55,15 @@ func Run() error {
 	}
 
 	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
-	err = db.Put("polls", []byte("init"), []byte("{}"))
+	err = db.Put("polls", []byte("0"), []byte("{}"))
 	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
 		return fmt.Errorf("error al crear el bucket polls: %v", err)
+	}
+
+	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
+	err = db.Put("config", []byte("nextPollID"), []byte("1"))
+	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
+		return fmt.Errorf("error al crear el bucket config: %v", err)
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -144,6 +150,10 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
+// /////////////////////////////////////////////////////////////
+// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
+// /////////////////////////////////////////////////////////////
+
 // Cargar las encuestas desde la base de datos al mapa en memoria
 // Esta función se llama al iniciar el servidor y carga todas las encuestas
 func (s *server) loadPolls() error {
@@ -173,10 +183,6 @@ func (s *server) loadPolls() error {
 
 	return nil
 }
-
-// /////////////////////////////////////////////////////////////
-// //// FUNCIONES RELACIONADAS CON LAS ENCUESTAS (POLLS) ///////
-// /////////////////////////////////////////////////////////////
 
 // Obtenemos el ID de la próxima encuesta desde la base de datos, y si no existe, lo inicializamos a 1
 func (s *server) initializeNextPollID() error {
@@ -243,7 +249,7 @@ func (s *server) createPoll(req api.Request) api.Response {
 	if err != nil {
 		return api.Response{Success: false, Message: "Duración inválida"}
 	}
-	creador := req.Username // Usuario que crea la encuesta
+	creador := req.Creador // Usuario que crea la encuesta
 
 	// Generar un ID único para la encuesta
 
@@ -258,6 +264,7 @@ func (s *server) createPoll(req api.Request) api.Response {
 	if poll == nil {
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
+	fmt.Printf("Encuesta creada: %s con pregunta %s y creador %s\n", pollID, req.Question, creador)
 
 	// Guardar la encuesta en la base de datos
 	pollData, err := json.Marshal(poll)
@@ -293,7 +300,7 @@ func (s *server) listPolls() api.Response {
 	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s\n", id, poll.Question, poll.Options, poll.Creador, poll.fechaFin)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
