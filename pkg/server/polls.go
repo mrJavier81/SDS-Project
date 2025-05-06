@@ -28,6 +28,7 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 
 	pollEndDate := time.Now().Add(time.Duration(duracionHoras) * time.Hour).Format("2006-01-02 15:04:05")
 	fechaInicio := time.Now().Format("2006-01-02 15:04:05")
+	//fmt.Printf("Creando poll con fecha limite %s y fecha de inicio %s\n", pollEndDate, fechaInicio)
 	return &Poll{
 		ID:           id,
 		Question:     question,

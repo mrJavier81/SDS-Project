@@ -60,11 +60,19 @@ func Run() error {
 		return fmt.Errorf("error al crear el bucket polls: %v", err)
 	}
 
+	idActual, _ := db.Get("config", []byte("nextPollID"))
+
+	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
+
 	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
 	err = db.Put("config", []byte("nextPollID"), []byte("1"))
 	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
 		return fmt.Errorf("error al crear el bucket config: %v", err)
 	}
+
+	idActual, _ = db.Get("config", []byte("nextPollID"))
+
+	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
 	superadmins := []string{"Mirri", "Saulet", "Fabix"}
@@ -300,7 +308,7 @@ func (s *server) listPolls() api.Response {
 	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s\n", id, poll.Question, poll.Options, poll.Creador, poll.fechaFin)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, Estado: %s\n", id, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants, poll.estado)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
