@@ -25,10 +25,11 @@ type Request struct {
 	Data     string   `json:"data,omitempty"`
 	Role     string   `json:"role,omitempty"`
 	NewRole  string   `json:"newRole,omitempty"`
-	PollID   string   `json:"poll_id,omitempty"`
-	Question string   `json:"question,omitempty"`
-	Options  []string `json:"options,omitempty"`
+	PollID   string   `json:"poll_id,omitempty"`  // ID de la votacion
+	Question string   `json:"question,omitempty"` // Pregunta de la votacion
+	Options  []string `json:"options,omitempty"`  // Opciones de la votacion
 	Option   string   `json:"option,omitempty"`
+	Creador  string   `json:"creator,omitempty"` // Creador de la votacion
 }
 
 type Response struct {

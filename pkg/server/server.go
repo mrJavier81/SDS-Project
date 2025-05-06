@@ -28,6 +28,7 @@ type server struct {
 	log   *log.Logger      // logger para mensajes de error e información
 	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
 	//tokenCounter int64       // contador para generar tokens
+	nextPollID int64 // ID para la próxima encuesta
 }
 
 // Run inicia la base de datos y arranca el servidor HTTP.
@@ -178,10 +179,10 @@ func (s *server) listPolls() api.Response {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
 	}
 
-	pollList := "Encuestas activas:\n"
+	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %s, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
+		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s\n", id, poll.Question, poll.Options, poll.Creador)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
