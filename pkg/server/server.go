@@ -3,6 +3,12 @@
 package server
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,25 +16,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"prac/pkg/api"
-	"prac/pkg/store"
-
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-
-	"strconv"
-
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 
-	"golang.org/x/crypto/argon2"
-
-	"encoding/base64"
+	"prac/pkg/api"
+	"prac/pkg/store"
 )
 
 // server encapsula el estado de nuestro servidor
@@ -40,7 +36,7 @@ type server struct {
 	nextPollID int64 // ID para la próxima encuesta
 }
 
-// Run inicia la base de datos y arranca el servidor HTTP.
+// Run inicia la base de datos y arranca el servidor HTTPS.
 func Run() error {
 	// Abrimos la base de datos usando el motor bbolt
 	db, err := store.NewStore("bbolt", "data/server.db")
@@ -91,26 +87,25 @@ func Run() error {
 		}
 	}
 
-	if err := srv.initializeNextPollID(); err != nil {
-		return fmt.Errorf("error inicializando nextPollID: %v", err)
-	}
-
-	// Cargar las encuestas desde la base de datos
-	if err := srv.loadPolls(); err != nil {
-		return fmt.Errorf("error al cargar encuestas: %v", err)
-	}
-
 	// Al terminar, cerramos la base de datos
 	defer srv.db.Close()
 
-	// Construimos un mux y asociamos /api a nuestro apiHandler,
+	// Construimos un mux y asociamos /api a nuestro apiHandler
 	mux := http.NewServeMux()
 	mux.Handle("/api", http.HandlerFunc(srv.apiHandler))
 
-	// Iniciamos el servidor HTTP.
-	err = http.ListenAndServe(":8080", mux)
+	// Configuración de HTTPS
+	certFile := "cert.pem" // Ruta al certificado SSL
+	keyFile := "key.pem"   // Ruta a la clave privada
 
-	return err
+	// Iniciamos el servidor HTTPS
+	fmt.Println("Servidor HTTPS iniciado en https://localhost:8443")
+	err = http.ListenAndServeTLS(":8443", certFile, keyFile, mux)
+	if err != nil {
+		return fmt.Errorf("error iniciando servidor HTTPS: %v", err)
+	}
+
+	return nil
 }
 
 // apiHandler descodifica la solicitud JSON, la despacha
@@ -263,7 +258,7 @@ func (s *server) saveNextPollID() error {
 }*/
 
 func (s *server) createPoll(req api.Request) api.Response {
-	// Validar datos de entrada
+	// Crear una nueva encuesta
 	if req.Question == "" || len(req.Options) == 0 {
 		return api.Response{Success: false, Message: "Faltan datos para crear la encuesta"}
 	}
@@ -559,22 +554,25 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Obtenemos los datos asociados al usuario
+	// Obtenemos los datos asociados al usuario desde 'userdata'
 	rawData, err := s.db.Get("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
 
-	// Desencriptamos los datos antes de devolverlos
-	decryptedData, err := decrypt(string(rawData), req.Username)
+	// Derivamos la clave de cifrado a partir del nombre de usuario
+	key := deriveKey(req.Username)
+
+	// Desciframos los datos antes de devolverlos
+	decryptedData, err := decryptHTTPS(rawData, key)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al desencriptar datos del usuario"}
+		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
 	}
 
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    decryptedData,
+		Data:    string(decryptedData),
 	}
 }
 
@@ -589,13 +587,17 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Encriptamos los datos del usuario antes de guardarlos
-	encryptedData, err := encrypt(req.Data, req.Username)
+	// Derivamos la clave de cifrado a partir del nombre de usuario
+	key := deriveKey(req.Username)
+
+	// Ciframos los datos del usuario antes de guardarlos
+	encryptedData, err := encryptHTTPS([]byte(req.Data), key)
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al encriptar datos del usuario"}
+		return api.Response{Success: false, Message: "Error al cifrar datos del usuario"}
 	}
 
-	if err := s.db.Put("userdata", []byte(req.Username), []byte(encryptedData)); err != nil {
+	// Guardamos los datos cifrados en la base de datos
+	if err := s.db.Put("userdata", []byte(req.Username), encryptedData); err != nil {
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
 
@@ -710,4 +712,55 @@ func decrypt(ciphertextBase64 string, passphrase string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// encryptHTTPS cifra los datos utilizando AES-GCM y devuelve el ciphertext con el nonce adjunto.
+func encryptHTTPS(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el cifrador AES: %v", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el modo GCM: %v", err)
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize()) // Generar un nonce aleatorio
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("error generando nonce: %v", err)
+	}
+
+	// Cifrar los datos y adjuntar el nonce al principio del ciphertext
+	ciphertext := aesGCM.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// decryptHTTPS descifra los datos utilizando AES-GCM y devuelve el plaintext.
+func decryptHTTPS(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el cifrador AES: %v", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("error creando el modo GCM: %v", err)
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext demasiado corto")
+	}
+
+	// Separar el nonce del ciphertext
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+
+	// Descifrar los datos
+	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error descifrando datos: %v", err)
+	}
+
+	return plaintext, nil
 }

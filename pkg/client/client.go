@@ -20,6 +20,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 
 	"golang.org/x/crypto/scrypt"
 )
@@ -544,14 +546,45 @@ func (c *client) logoutUser() {
 // devuelve la respuesta decodificada. Se usa para todas las acciones.
 func (c *client) sendRequest(req api.Request) api.Response {
 	jsonData, _ := json.Marshal(req)
-	resp, err := http.Post("http://localhost:8080/api", "application/json", bytes.NewBuffer(jsonData))
+
+	// Cargar los certificados
+	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+	if err != nil {
+		fmt.Println("Error al cargar los certificados:", err)
+		return api.Response{Success: false, Message: "Error al cargar certificados"}
+	}
+
+	// Crear un pool de certificados raíz
+	caCertPool := x509.NewCertPool()
+
+	// Si estás usando un certificado autofirmado, puedes cargarlo aquí
+	caCert, err := os.ReadFile("cert.pem")
+	if err != nil {
+		fmt.Println("Error al leer el certificado raíz:", err)
+		return api.Response{Success: false, Message: "Error al leer certificado raíz"}
+	}
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	// Configurar el cliente HTTP con los certificados
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates:       []tls.Certificate{cert},
+				RootCAs:            caCertPool,
+				InsecureSkipVerify: false, // Asegúrate de validar el certificado del servidor
+			},
+		},
+	}
+
+	// Realizar la solicitud POST
+	resp, err := client.Post("https://localhost:8443/api", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Println("Error al contactar con el servidor:", err)
 		return api.Response{Success: false, Message: "Error de conexión"}
 	}
 	defer resp.Body.Close()
 
-	// Leemos el body de respuesta y lo desempaquetamos en un api.Response
+	// Leer el cuerpo de la respuesta y desempaquetarlo en un api.Response
 	body, _ := io.ReadAll(resp.Body)
 	var res api.Response
 	_ = json.Unmarshal(body, &res)
@@ -610,7 +643,7 @@ func encryptData(c *client, data string) ([]byte, []byte, error) {
 
 func decryptData(c *client, nonce, cipherText []byte) (string, error) {
 	// Verificar que cipherText no sea nil o vacío
-	if cipherText == nil || len(cipherText) == 0 {
+	if len(cipherText) == 0 {
 		return "", nil
 	}
 
