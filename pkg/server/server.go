@@ -197,6 +197,8 @@ func (s *server) initializeNextPollID() error {
 	// Intentar obtener el ID de la próxima encuesta desde la base de datos
 	data, err := s.db.Get("config", []byte("nextPollID"))
 	if err != nil {
+
+		fmt.Printf("Inicializando nextPollID: %s", data)
 		// Si no existe la clave, inicializar el ID a 1
 		if strings.Contains(err.Error(), "clave no encontrada") {
 			s.nextPollID = 1
@@ -205,6 +207,7 @@ func (s *server) initializeNextPollID() error {
 		}
 		return fmt.Errorf("error al obtener nextPollID: %v", err)
 	}
+	fmt.Printf("NextpollID inicializado a %v", s.nextPollID)
 
 	// Convertir el valor recuperado a int64
 	nextPollID, err := strconv.ParseInt(string(data), 10, 64)
@@ -221,6 +224,8 @@ func (s *server) initializeNextPollID() error {
 func (s *server) saveNextPollID() error {
 	// Convertimos el valor de nextPollID a string
 	nextPollIDStr := strconv.FormatInt(s.nextPollID, 10)
+
+	fmt.Printf("Guardando nextPollID: %s", nextPollIDStr)
 
 	// Guardamos el valor en la base de datos bajo el namespace "config" con la clave "nextPollID"
 	if err := s.db.Put("config", []byte("nextPollID"), []byte(nextPollIDStr)); err != nil {
@@ -263,6 +268,9 @@ func (s *server) createPoll(req api.Request) api.Response {
 
 	pollID := strconv.FormatInt(s.nextPollID, 10)
 	s.nextPollID++ // Incrementar el ID para la próxima encuesta
+
+	fmt.Printf("nextPollID: %d\n", s.nextPollID)
+	// Guardar el nuevo ID de encuesta en la base de datos
 	if err := s.saveNextPollID(); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar el siguiente ID de encuesta"}
 	}
@@ -308,7 +316,7 @@ func (s *server) listPolls() api.Response {
 	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, Estado: %s\n", id, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants, poll.estado)
+		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n", id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
 	}
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
