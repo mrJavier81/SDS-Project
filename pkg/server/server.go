@@ -144,11 +144,14 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case api.ActionManageUsers: // New case for managing users
 		res = s.manageUsers(req)
 	case api.ActionFetchPolls:
-		if req.Data == "past" {
-			res = s.listPolls("past")
+		if req.Data == "past" { // Filtrar votaciones según si están pasadas o no
+			res = s.listPolls("past", req.Username)
+
+		} else if req.Data == "participate" { // Filtrar votaciones según si el usuario ha participado o no
+			res = s.listPolls("participate", req.Username)
 
 		} else {
-			res = s.listPolls("")
+			res = s.listPolls("", req.Username)
 		}
 	case api.ActionCreatePoll:
 		res = s.createPoll(req)
@@ -241,7 +244,7 @@ func (s *server) saveNextPollID() error {
 	return nil
 }
 
-func (s *server) managePolls(req api.Request) api.Response {
+/*func (s *server) managePolls(req api.Request) api.Response {
 	// Solo los administradores pueden gestionar encuestas
 	if req.Role != "admin" && req.Role != "superadmin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
@@ -257,7 +260,7 @@ func (s *server) managePolls(req api.Request) api.Response {
 	default:
 		return api.Response{Success: false, Message: "Acción no válida"}
 	}
-}
+}*/
 
 func (s *server) createPoll(req api.Request) api.Response {
 	// Validar datos de entrada
@@ -314,7 +317,7 @@ func (s *server) deletePoll(req api.Request) api.Response {
 }
 
 // listPolls lista las encuestas activas o pasadas según el filtro
-func (s *server) listPolls(filtro string) api.Response {
+func (s *server) listPolls(filtro string, user string) api.Response {
 	// Listar encuestas activas
 	if len(s.polls) == 0 {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
@@ -332,7 +335,12 @@ func (s *server) listPolls(filtro string) api.Response {
 			if fechaFin.After(time.Now()) {
 				continue
 			}
+		} else if filtro == "participate" {
+			if !poll.HasParticipated(user) {
+				continue
+			}
 		}
+		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
 			id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)

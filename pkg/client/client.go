@@ -250,6 +250,7 @@ func (c *client) verVotaciones() {
 		res := c.sendRequest(api.Request{
 			Action: api.ActionFetchPolls,
 			Role:   c.userRole,
+			Data:   "participated",
 		})
 		if res.Success {
 			fmt.Println("Votaciones en las que participas:")
