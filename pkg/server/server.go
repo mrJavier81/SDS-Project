@@ -35,6 +35,22 @@ type server struct {
 	nextPollID int64 // ID para la próxima encuesta
 }
 
+// initBucket intenta inicializar un bucket realizando una operación simple
+func initBucket(db store.Store, bucketName string) error {
+	// Intentamos escribir un valor vacío con una clave temporal
+	// Esto debería crear el bucket si no existe
+	err := db.Put(bucketName, []byte("__init__"), []byte(""))
+	if err != nil {
+		return fmt.Errorf("error inicializando bucket %s: %v", bucketName, err)
+	}
+
+	// Opcionalmente, podemos eliminar esta clave temporal
+	// Ya que solo la usamos para forzar la creación del bucket
+	// err = db.Delete(bucketName, []byte("__init__"))
+
+	return nil
+}
+
 // Run inicia la base de datos y arranca el servidor HTTPS.
 func Run() error {
 	// Abrimos la base de datos usando el motor bbolt
@@ -48,6 +64,22 @@ func Run() error {
 		db:    db,
 		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
 		polls: make(map[string]*Poll),
+	}
+
+	// Inicializamos todos los buckets necesarios
+	bucketsNecesarios := []string{
+		"auth",       // Credenciales de usuarios
+		"roles",      // Roles de usuarios
+		"sessions",   // Tokens de sesión
+		"superadmin", // Lista de superadmins
+		"messages",   // Mensajes entre usuarios
+		"polls",      // Encuestas (si las usas)
+	}
+
+	for _, bucket := range bucketsNecesarios {
+		if err := initBucket(srv.db, bucket); err != nil {
+			return err
+		}
 	}
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -123,6 +155,12 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.createPoll(req)
 	case api.ActionVote:
 		res = s.vote(req)
+	case api.ActionFetchMessages:
+		res = s.getMessages(req)
+	case api.ActionCheckUser:
+		res = s.checkUser(req)
+	case api.ActionSendMessage:
+		res = s.storeMessage(req.Dest, req.Data, req.Username)
 
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
@@ -358,7 +396,7 @@ func (s *server) registerUser(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Usuario registrado"}
 }
 
-// loginUser maneja el inicio de sesión de un usuario
+// maneja el inicio de sesión de un usuario
 func (s *server) loginUser(req api.Request) api.Response {
 	if req.Username == "" || req.Password == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
@@ -392,6 +430,110 @@ func (s *server) loginUser(req api.Request) api.Response {
 		Message: "Login exitoso",
 		Token:   token,
 		Data:    string(role), // Incluimos el rol en el campo Data
+	}
+}
+
+func (s *server) getMessages(req api.Request) api.Response {
+	// Chequeo de credenciales
+	if req.Username == "" || req.Token == "" {
+		return api.Response{Success: false, Message: "Faltan credenciales"}
+	}
+	if !s.isTokenValid(req.Username, req.Token) {
+		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
+	}
+
+	// Obtener los mensajes en formato JSON desde la base de datos
+	messagesJSON, err := s.db.Get("messages", []byte(req.Username))
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al obtener mensajes"}
+	}
+
+	// Convertir el JSON a un slice de cadenas
+	var messages []string
+	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
+		return api.Response{Success: false, Message: "Error al decodificar mensajes"}
+	}
+
+	return api.Response{
+		Success:  true,
+		Message:  "Mensajes obtenidos",
+		Data:     "Mensajes de " + req.Username,
+		Messages: messages,
+	}
+}
+
+func (s *server) storeMessage(username string, message string, sender string) api.Response {
+	// Obtener los mensajes existentes
+	messagesJSON, err := s.db.Get("messages", []byte(username))
+	if err != nil {
+		// Si no hay mensajes previos, inicializamos un slice vacío
+		if strings.Contains(err.Error(), "clave no encontrada") {
+			messagesJSON = []byte("[]") // Inicializamos con un JSON vacío
+		} else {
+			return api.Response{Success: false, Message: "Error al obtener mensajes: " + err.Error()}
+		}
+	}
+
+	// Decodificar los mensajes existentes
+	var messages []string
+	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
+		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
+	}
+
+	// Formatear el mensaje con el remitente
+	formattedMessage := fmt.Sprintf("Mensaje de %s: %s", sender, message)
+
+	// Agregar el nuevo mensaje
+	messages = append(messages, formattedMessage)
+
+	// Codificar los mensajes actualizados a JSON
+	messagesJSON, err = json.Marshal(messages)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al codificar mensajes: " + err.Error()}
+	}
+
+	// Guardar los mensajes actualizados en la base de datos
+	if err := s.db.Put("messages", []byte(username), messagesJSON); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar mensajes: " + err.Error()}
+	}
+
+	return api.Response{
+		Success: true,
+		Message: "Mensaje enviado correctamente",
+		Data:    fmt.Sprintf("Enviado a %s", username),
+	}
+}
+
+func (s *server) checkUser(req api.Request) api.Response {
+	// Chequeo de credenciales
+	if req.Username == "" || req.Token == "" {
+		return api.Response{Success: false, Message: "Faltan credenciales"}
+	}
+	if !s.isTokenValid(req.Username, req.Token) {
+		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
+	}
+
+	// Verificamos si el usuario existe
+	exists, err := s.userExists(req.Username)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al verificar usuario"}
+	}
+	if !exists {
+		return api.Response{Success: false, Message: "El usuario no existe"}
+	}
+
+	dest, err := s.userExists(req.Dest)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al verificar usuario destino"}
+	}
+	if !dest {
+		return api.Response{Success: false, Message: "El usuario destino no existe"}
+	}
+
+	return api.Response{
+		Success: true,
+		Message: "Usuario verificado",
+		Data:    "El usuario existe y el destino también",
 	}
 }
 

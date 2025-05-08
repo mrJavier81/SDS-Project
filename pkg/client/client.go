@@ -77,6 +77,7 @@ func (c *client) runLoop() {
 				"Ver votaciones",
 				"Ver datos",
 				"Actualizar datos",
+				"Enviar mensaje",
 				"Cerrar sesión",
 			}
 
@@ -117,7 +118,8 @@ func (c *client) runLoop() {
 			case 3:
 				c.updateData()
 			case 4:
-				c.logoutUser()
+				c.sendMessage()
+
 			case 5:
 				if c.userRole == "superadmin" {
 					c.administrarUsuarios()
@@ -137,8 +139,11 @@ func (c *client) runLoop() {
 
 					return
 				}
-
 			case 7:
+				// Opcion send message
+				c.logoutUser()
+
+			case 8:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
 				return
@@ -393,7 +398,6 @@ func (c *client) registerUser() {
 }
 
 // loginUser pide credenciales y realiza un login en el servidor.
-// loginUser pide credenciales y realiza un login en el servidor.
 func (c *client) loginUser() {
 	ui.ClearScreen()
 	fmt.Println("** Inicio de sesión **")
@@ -404,24 +408,40 @@ func (c *client) loginUser() {
 	// Hash de la contraseña
 	kKey, kData := hashPassword(password)
 
-	// Guardamos kData para uso futuro (añadir esta línea)
+	// Guardamos kData para uso futuro
 	c.kData = kData
 
+	// Enviamos la solicitud de inicio de sesión al servidor
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionLogin,
 		Username: username,
 		Password: kKey,
 	})
 
+	// Mostramos el resultado de la solicitud
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 
-	// Si login fue exitoso, guardamos currentUser y el token.
+	// Si el inicio de sesión fue exitoso
 	if res.Success {
 		c.currentUser = username
 		c.authToken = res.Token
 		c.userRole = res.Data
 		fmt.Printf("Sesión iniciada como %v. Token guardado.\n", c.userRole)
+	}
+
+	res = c.sendRequest(api.Request{
+		Action:   api.ActionFetchMessages,
+		Username: c.currentUser,
+		Token:    c.authToken,
+	})
+	if res.Success {
+		fmt.Println("Mensajes recibidos:")
+		for _, message := range res.Messages {
+			fmt.Println(message)
+		}
+	} else {
+		fmt.Println("Error al recibir mensajes:", res.Message)
 	}
 }
 
@@ -587,6 +607,57 @@ func (c *client) sendRequest(req api.Request) api.Response {
 	var res api.Response
 	_ = json.Unmarshal(body, &res)
 	return res
+}
+
+func (c *client) sendMessage() {
+	fmt.Println("** Enviar mensaje **")
+
+	if c.currentUser == "" || c.authToken == "" {
+		fmt.Println("No estás logueado. Inicia sesión primero.")
+		return
+	}
+
+	// Introducir nombre de usuario destinatario
+	recipient := ui.ReadInput("Nombre de usuario del destinatario")
+
+	// Comprobar si el destinatario es válido
+	if recipient == "" {
+		fmt.Println("Nombre de usuario inválido.")
+		return
+	}
+
+	res := c.sendRequest(api.Request{
+		Action:   api.ActionCheckUser,
+		Username: c.currentUser,
+		Token:    c.authToken,
+		Dest:     recipient,
+	})
+
+	if res.Success {
+		fmt.Println("El usuario es válido.")
+	} else {
+		fmt.Println("El usuario no existe.")
+		return
+	}
+
+	message := ui.ReadInput("Introduce el mensaje")
+
+	res = c.sendRequest(api.Request{
+		Action:   api.ActionSendMessage,
+		Username: c.currentUser,
+		Token:    c.authToken,
+		Dest:     recipient,
+		Data:     message,
+	})
+
+	fmt.Println("Éxito:", res.Success)
+	fmt.Println("Mensaje:", res.Message)
+	if res.Success {
+		fmt.Println("Mensaje enviado a", recipient)
+	} else {
+		fmt.Println("Error al enviar el mensaje:", res.Message)
+	}
+
 }
 
 // HashPassword hashea la contraseña completa con SHA-256
