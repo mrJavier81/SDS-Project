@@ -743,4 +743,5 @@ func generatePrivateKey(c *client) []byte {
 	if err != nil {
 		log.Fatal("Error al derivar la semilla:", err)
 	}
+	return seed
 }
