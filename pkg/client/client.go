@@ -72,24 +72,17 @@ func (c *client) runLoop() {
 				"Salir",
 			}
 		} else {
-			// Usuario logueado: Ver datos, Actualizar datos, Logout, Salir
+			// Usuario logueado: Ver votaciones, Ver datos, etc.
 			options = []string{
 				"Ver votaciones",
 				"Ver datos",
 				"Actualizar datos",
 				"Enviar mensaje",
 				"Cerrar sesión",
+				"Administrar usuarios",
+				"Administrar votaciones",
+				"Salir",
 			}
-
-			if c.userRole == "superadmin" {
-				options = append(options, "Administrar usuarios")
-			}
-
-			if c.userRole == "admin" || c.userRole == "superadmin" {
-				options = append(options, "Administrar votaciones")
-			}
-
-			options = append(options, "Salir")
 		}
 
 		// Mostramos el menú y obtenemos la elección del usuario.
@@ -119,30 +112,12 @@ func (c *client) runLoop() {
 				c.updateData()
 			case 4:
 				c.sendMessage()
-
 			case 5:
-				if c.userRole == "superadmin" {
-					c.administrarUsuarios()
-				} else if c.userRole == "admin" {
-
-					c.administrarVotaciones()
-
-				} else { // Si no es admin, la opcion de salir se mostrará como la cuarta
-					c.log.Println("Saliendo del cliente...")
-					return
-				}
-			case 6:
-				if c.userRole == "superadmin" {
-					c.administrarVotaciones()
-				} else {
-					c.log.Println("Saliendo del cliente...")
-
-					return
-				}
-			case 7:
-				// Opcion send message
 				c.logoutUser()
-
+			case 6:
+				c.administrarUsuarios()
+			case 7:
+				c.administrarVotaciones()
 			case 8:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
@@ -293,6 +268,7 @@ func (c *client) administrarUsuarios() {
 		"Listar usuarios",
 		"Modificar usuario",
 		"Eliminar usuario",
+		"Ver logs del sistema", // Nueva opción para ver los logs
 		"Volver al menú principal",
 	}
 
@@ -338,6 +314,9 @@ func (c *client) administrarUsuarios() {
 		fmt.Println("Resultado:", res.Message)
 
 	case 4:
+		// Ver logs del sistema
+		c.verLogs()
+	case 5:
 		// Return to main menu
 		return
 	}
@@ -345,6 +324,24 @@ func (c *client) administrarUsuarios() {
 	ui.Pause("Pulsa [Enter] para continuar...")
 	c.administrarUsuarios()
 
+}
+
+func (c *client) verLogs() {
+	ui.ClearScreen()
+	fmt.Println("** Logs del sistema **")
+
+	// Enviar solicitud al servidor para obtener los logs
+	res := c.sendRequest(api.Request{
+		Action: api.ActionFetchLogs,
+		Role:   c.userRole,
+	})
+
+	if res.Success {
+		fmt.Println("Logs del sistema:")
+		fmt.Println(res.Data)
+	} else {
+		fmt.Println("Error al obtener logs:", res.Message)
+	}
 }
 
 // registerUser pide credenciales y las envía al servidor para un registro.
