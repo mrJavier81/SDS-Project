@@ -737,3 +737,10 @@ func decryptData(c *client, nonce, cipherText []byte) (string, error) {
 
 	return string(plainText), nil
 }
+
+func generatePrivateKey(c *client) []byte {
+	seed, err := scrypt.Key([]byte(c.kData), []byte(c.currentUser), 32768, 8, 1, 32)
+	if err != nil {
+		log.Fatal("Error al derivar la semilla:", err)
+	}
+}
