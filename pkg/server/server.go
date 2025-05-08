@@ -3,23 +3,27 @@
 package server
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 
 	"prac/pkg/api"
 	"prac/pkg/store"
-
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-
-	"strconv"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // server encapsula el estado de nuestro servidor
