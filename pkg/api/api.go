@@ -17,6 +17,7 @@ const (
 	ActionCheckUser     = "checkUser"
 	ActionFetchMessages = "fetchMessages"
 	ActionSendMessage   = "sendMessage"
+	ActionFetchLogs     = "fetchLogs" // Nueva acción para obtener logs
 )
 
 // Request y Response como antes
