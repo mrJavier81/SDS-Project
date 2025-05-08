@@ -262,6 +262,7 @@ func (c *client) verVotaciones() {
 		res := c.sendRequest(api.Request{
 			Action: api.ActionFetchPolls,
 			Role:   c.userRole,
+			Data:   "past",
 		})
 		if res.Success {
 			fmt.Println("Votaciones pasadas:")

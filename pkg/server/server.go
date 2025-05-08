@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"prac/pkg/api"
 	"prac/pkg/store"
@@ -143,7 +144,12 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case api.ActionManageUsers: // New case for managing users
 		res = s.manageUsers(req)
 	case api.ActionFetchPolls:
-		res = s.listPolls()
+		if req.Data == "past" {
+			res = s.listPolls("past")
+
+		} else {
+			res = s.listPolls("")
+		}
 	case api.ActionCreatePoll:
 		res = s.createPoll(req)
 	case api.ActionVote:
@@ -243,7 +249,7 @@ func (s *server) managePolls(req api.Request) api.Response {
 
 	switch req.Data {
 	case "list":
-		return s.listPolls()
+		return s.listPolls("")
 	case "delete":
 		return s.deletePoll(req)
 	case "create":
@@ -307,7 +313,8 @@ func (s *server) deletePoll(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Encuesta eliminada"}
 }
 
-func (s *server) listPolls() api.Response {
+// listPolls lista las encuestas activas o pasadas según el filtro
+func (s *server) listPolls(filtro string) api.Response {
 	// Listar encuestas activas
 	if len(s.polls) == 0 {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
@@ -316,8 +323,25 @@ func (s *server) listPolls() api.Response {
 	pollList := "\n"
 	for id, poll := range s.polls {
 
-		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n", id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
+		if filtro == "past" {
+			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.fechaFin)
+			if err != nil {
+				continue
+			}
+
+			if fechaFin.After(time.Now()) {
+				continue
+			}
+		}
+
+		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
+			id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
 	}
+
+	if pollList == "\n" {
+		return api.Response{Success: false, Message: "No hay encuestas que coincidan con el filtro"}
+	}
+
 	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
 }
 
