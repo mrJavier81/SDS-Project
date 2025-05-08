@@ -74,6 +74,7 @@ func Run() error {
 		"superadmin", // Lista de superadmins
 		"messages",   // Mensajes entre usuarios
 		"polls",      // Encuestas (si las usas)
+		"pKeys",      // Claves públicas de usuarios
 	}
 
 	for _, bucket := range bucketsNecesarios {
@@ -161,6 +162,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.checkUser(req)
 	case api.ActionSendMessage:
 		res = s.storeMessage(req.Dest, req.Data, req.Username)
+	case api.ActionGetPublicKey:
+		res = s.getPublicKey(req)
 
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
@@ -324,6 +327,24 @@ func (s *server) manageUsers(req api.Request) api.Response {
 	}
 
 	return api.Response{Success: false, Message: "Acción no válida"}
+}
+
+func (s *server) getPublicKey(req api.Request) api.Response {
+	// Obtener la clave pública del usuario
+	if req.Username == "" {
+		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+	}
+
+	publicKey, err := s.db.Get("pKeys", []byte(req.Username))
+
+	if err != nil {
+		if strings.Contains(err.Error(), "clave no encontrada") {
+			return api.Response{Success: false, Message: "Clave pública no encontrada"}
+		}
+		return api.Response{Success: false, Message: "Error al obtener clave pública"}
+	}
+
+	return api.Response{Success: true, Message: "Clave pública obtenida", Data: string(publicKey)}
 }
 
 // generateToken crea un token seguro usando valores aleatorios y SHA-256

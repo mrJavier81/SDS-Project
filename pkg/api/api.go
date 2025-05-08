@@ -17,6 +17,7 @@ const (
 	ActionCheckUser     = "checkUser"
 	ActionFetchMessages = "fetchMessages"
 	ActionSendMessage   = "sendMessage"
+	ActionGetPublicKey  = "getPublicKey"
 )
 
 // Request y Response como antes
