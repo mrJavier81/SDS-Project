@@ -159,7 +159,7 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case api.ActionVote:
 		res = s.vote(req)
 	case api.ActionFetchMessages:
-		res = s.getMessages(req)
+		res = s.fetchMessages(req)
 	case api.ActionCheckUser:
 		res = s.checkUser(req)
 	case api.ActionSendMessage:
@@ -168,6 +168,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.fetchLogs(req)
 	case api.ActionGetPublicKey:
 		res = s.getPublicKey(req)
+	case api.ActionSavePublicKey:
+		res = s.savePublicKey(req)
 
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
@@ -355,6 +357,24 @@ func (s *server) getPublicKey(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Clave pública obtenida", Data: string(publicKey)}
 }
 
+func (s *server) savePublicKey(req api.Request) api.Response {
+	// Guardar la clave pública del usuario
+	if req.Username == "" || req.Data == "" {
+
+		return api.Response{Success: false, Message: "Faltan datos para guardar clave pública"}
+	}
+
+	fmt.Println("Guardando clave pública para el usuario:", req.Username)
+	if err := s.db.Put("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
+		fmt.Print("Error al guardar clave pública database:", err, "\n")
+		return api.Response{Success: false, Message: "Error al guardar clave pública"}
+	}
+
+	fmt.Print("Clave pública guardada: ", req.Data, "\n")
+
+	return api.Response{Success: true, Message: "Clave pública guardada"}
+}
+
 // generateToken crea un token seguro usando valores aleatorios y SHA-256
 func (s *server) generateToken() string {
 	// Generar 32 bytes aleatorios
@@ -469,7 +489,7 @@ func (s *server) loginUser(req api.Request) api.Response {
 	}
 }
 
-func (s *server) getMessages(req api.Request) api.Response {
+func (s *server) fetchMessages(req api.Request) api.Response {
 	// Chequeo de credenciales
 	if req.Username == "" || req.Token == "" {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
@@ -484,7 +504,7 @@ func (s *server) getMessages(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al obtener mensajes"}
 	}
 
-	// Convertir el JSON a un slice de cadenas
+	// Convertir el JSON a un slice de mapas
 	var messages []string
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
 		return api.Response{Success: false, Message: "Error al decodificar mensajes"}
@@ -493,8 +513,7 @@ func (s *server) getMessages(req api.Request) api.Response {
 	return api.Response{
 		Success:  true,
 		Message:  "Mensajes obtenidos",
-		Data:     "Mensajes de " + req.Username,
-		Messages: messages,
+		Messages: messages, // Devolver los mensajes como están
 	}
 }
 
@@ -516,11 +535,8 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
 	}
 
-	// Formatear el mensaje con el remitente
-	formattedMessage := fmt.Sprintf("Mensaje de %s: %s", sender, message)
-
 	// Agregar el nuevo mensaje
-	messages = append(messages, formattedMessage)
+	messages = append(messages, message)
 
 	// Codificar los mensajes actualizados a JSON
 	messagesJSON, err = json.Marshal(messages)
@@ -539,7 +555,6 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 		Data:    fmt.Sprintf("Enviado a %s", username),
 	}
 }
-
 func (s *server) checkUser(req api.Request) api.Response {
 	// Chequeo de credenciales
 	if req.Username == "" || req.Token == "" {

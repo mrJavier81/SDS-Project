@@ -18,6 +18,10 @@ import (
 
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
+
+	"golang.org/x/crypto/nacl/box"
+
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -34,6 +38,7 @@ type client struct {
 	authToken   string
 	userRole    string
 	kData       string
+	//privKey     ed25519.PrivateKey   //Descomentar si generar la clave cada vez es muy lento
 }
 
 // Run es la única función exportada de este paquete.
@@ -388,9 +393,14 @@ func (c *client) registerUser() {
 			c.authToken = loginRes.Token
 			c.userRole = loginRes.Data
 			fmt.Printf("Login automático como %v exitoso. Token guardado.\n", c.userRole)
+
+			// Generar y enviar la clave pública al servidor
+			sendPublicKeyToServer(c)
+
 		} else {
 			fmt.Println("No se ha podido hacer login automático:", loginRes.Message)
 		}
+
 	}
 }
 
@@ -425,6 +435,8 @@ func (c *client) loginUser() {
 		c.authToken = res.Token
 		c.userRole = res.Data
 		fmt.Printf("Sesión iniciada como %v. Token guardado.\n", c.userRole)
+
+		//privateKey := generatePrivateKeyFromPassword(c)
 	}
 
 	res = c.sendRequest(api.Request{
@@ -434,8 +446,48 @@ func (c *client) loginUser() {
 	})
 	if res.Success {
 		fmt.Println("Mensajes recibidos:")
+
 		for _, message := range res.Messages {
-			fmt.Println(message)
+			// Decodificar el mensaje de hexadecimal a bytes
+
+			fmt.Println("Mensaje recibido:", message)
+			// Convertir el mensaje a json
+			messageData, err := hex.DecodeString(message)
+
+			if err != nil {
+				fmt.Println("Error al decodificar el mensaje:", err)
+				continue
+			}
+
+			fmt.Println("Mensaje decodificado:", string(messageData))
+
+			// Hecho mediante vibe coding
+
+			encryptedMessage := messageData
+			if err != nil {
+				fmt.Println("Error al decodificar el mensaje:", err)
+				continue
+			}
+
+			// Separar el nonce y el mensaje cifrado
+			if len(encryptedMessage) < 24 {
+				fmt.Println("Mensaje cifrado inválido: falta el nonce")
+				continue
+			}
+			var nonce [24]byte
+			copy(nonce[:], encryptedMessage[:24])
+			cipherText := encryptedMessage[24:]
+
+			// Descifrar el mensaje
+			_, privateKey := getKeyPairFromPassword(c)
+			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, nil, privateKey)
+			if !ok {
+				fmt.Println("Error al descifrar el mensaje")
+				continue
+			}
+
+			// Mostrar el mensaje descifrado
+			fmt.Println("Mensaje descifrado: Usuario " /*messageData["sender"],*/, string(decryptedMessage))
 		}
 	} else {
 		fmt.Println("Error al recibir mensajes:", res.Message)
@@ -615,19 +667,22 @@ func (c *client) sendMessage() {
 	}
 
 	// Introducir nombre de usuario destinatario
-	recipient := ui.ReadInput("Nombre de usuario del destinatario")
+	destinatario := ui.ReadInput("Nombre de usuario del destinatario")
 
 	// Comprobar si el destinatario es válido
-	if recipient == "" {
+	if destinatario == "" {
 		fmt.Println("Nombre de usuario inválido.")
 		return
 	}
+
+	// Aqui vas a encriptar el mensaje con la clave publica del destinatario
+	// y luego enviarlo al servidor
 
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionCheckUser,
 		Username: c.currentUser,
 		Token:    c.authToken,
-		Dest:     recipient,
+		Dest:     destinatario,
 	})
 
 	if res.Success {
@@ -640,17 +695,45 @@ func (c *client) sendMessage() {
 	message := ui.ReadInput("Introduce el mensaje")
 
 	res = c.sendRequest(api.Request{
+		Action:   api.ActionGetPublicKey,
+		Username: c.currentUser,
+		Token:    c.authToken,
+	})
+
+	// Clave pública del destinatario
+	publicKeyReceptor, err := stringToPublicKey(res.Data)
+
+	if err != nil {
+		fmt.Println("Error al convertir la clave pública:", err)
+		return
+	}
+
+	_, privateKey := getKeyPairFromPassword(c)
+
+	var nonce [24]byte
+
+	if _, err := rand.Read(nonce[:]); err != nil {
+		fmt.Printf("Error al generar nonce: %v", err)
+		return
+	}
+	// Cifrar el mensaje con la clave pública del destinatario
+	encryptedMessage := box.Seal(nil, []byte(message), &nonce, publicKeyReceptor, privateKey)
+
+	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
+	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
+
+	res = c.sendRequest(api.Request{
 		Action:   api.ActionSendMessage,
 		Username: c.currentUser,
 		Token:    c.authToken,
-		Dest:     recipient,
-		Data:     message,
+		Dest:     destinatario,
+		Data:     encryptedMessageHex,
 	})
 
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 	if res.Success {
-		fmt.Println("Mensaje enviado a", recipient)
+		fmt.Println("Mensaje enviado a", destinatario)
 	} else {
 		fmt.Println("Error al enviar el mensaje:", res.Message)
 	}
@@ -738,10 +821,91 @@ func decryptData(c *client, nonce, cipherText []byte) (string, error) {
 	return string(plainText), nil
 }
 
-func generatePrivateKey(c *client) []byte {
+// Esta función genera la clave privada del cliente a partir de una semilla
+// obtenida a partir de su contraseña y con salt del nombre
+func generatePrivateKeyFromPassword(c *client) ed25519.PrivateKey {
+	seed, err := scrypt.Key([]byte(c.kData), []byte(c.currentUser), 32768, 8, 1, 32)
+	if err != nil {
+		fmt.Errorf("Error al derivar la semilla: %v", err)
+	}
+
+	// Generamos la clave privada mediante el algoritmo ed25519 a partir de la semilla generada
+	privateKey := ed25519.NewKeyFromSeed(seed)
+
+	// Guardamos la clave privada en el cliente
+
+	return privateKey
+}
+
+/*publicKey := privateKey.Public().(ed25519.PublicKey)
+
+c.sendRequest(api.Request{
+	Action:   api.ActionSavePublicKey,
+	Username: c.currentUser,
+	Token:    c.authToken,
+	Data:     hex.EncodeToString(publicKey),
+})
+*/ //Esto es el fragmento para que se guarde la clave publica en el servidor usalo donde te salga de los huitos
+
+// En vez de generar
+func getKeyPairFromPassword(c *client) (*[32]byte, *[32]byte) {
+	// Derivamos la semilla a partir de kData y el nombre de usuario
 	seed, err := scrypt.Key([]byte(c.kData), []byte(c.currentUser), 32768, 8, 1, 32)
 	if err != nil {
 		log.Fatal("Error al derivar la semilla:", err)
 	}
-	return seed
+
+	// Declaramos la semilla con longitud fija de 32 bytes,
+	// que es necesario para la clave pública y privada de ed25519
+
+	publicKey, privateKey, _ := box.GenerateKey(bytes.NewReader(seed))
+
+	return publicKey, privateKey
+}
+
+// Enviamos la clave pública al servidor
+func sendPublicKeyToServer(c *client) {
+	publicKey, _ := getKeyPairFromPassword(c)
+	if publicKey == nil {
+		fmt.Println("Error al obtener la clave pública.")
+		return
+	}
+
+	pKeySend := hex.EncodeToString(publicKey[:])
+
+	res := c.sendRequest(api.Request{
+		Action:   api.ActionSavePublicKey,
+		Username: c.currentUser,
+		Token:    c.authToken,
+		Data:     pKeySend,
+	})
+
+	if !res.Success {
+		fmt.Println("Error al enviar la clave pública:", res.Message)
+		return
+	}
+	// Si la respuesta es exitosa, mostramos un mensaje
+	// de confirmación
+	// y guardamos la clave pública en el cliente
+
+	fmt.Println("Clave pública enviada al servidor.")
+}
+
+func stringToPublicKey(hexString string) (*[32]byte, error) {
+	// Decode the hex string to bytes
+	publicKeyBytes, err := hex.DecodeString(hexString)
+	if err != nil {
+		return nil, fmt.Errorf("error al decodificar clave pública: %v", err)
+	}
+
+	// Ensure the public key is the correct length
+	if len(publicKeyBytes) != 32 {
+		return nil, fmt.Errorf("clave pública inválida: longitud incorrecta")
+	}
+
+	// Convert the bytes to a [32]byte array
+	var publicKey [32]byte
+	copy(publicKey[:], publicKeyBytes)
+
+	return &publicKey, nil
 }

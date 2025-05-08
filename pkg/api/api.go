@@ -19,6 +19,7 @@ const (
 	ActionSendMessage   = "sendMessage"
 	ActionFetchLogs     = "fetchLogs" // Nueva acción para obtener logs
 	ActionGetPublicKey  = "getPublicKey"
+	ActionSavePublicKey = "savePublicKey"
 )
 
 // Request y Response como antes
