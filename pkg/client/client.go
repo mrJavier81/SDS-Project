@@ -716,11 +716,17 @@ func (c *client) sendMessage() {
 		fmt.Printf("Error al generar nonce: %v", err)
 		return
 	}
+
+	finalMessage := append(nonce[:], []byte(message)...)
 	// Cifrar el mensaje con la clave pública del destinatario
-	encryptedMessage := box.Seal(nil, []byte(message), &nonce, publicKeyReceptor, privateKey)
+	encryptedMessage := box.Seal(nil, []byte(finalMessage), &nonce, publicKeyReceptor, privateKey)
+
+	fmt.Printf("Mensaje cifrado: %v con length: %d\n", encryptedMessage, len(encryptedMessage))
 
 	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
 	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
+
+	fmt.Printf("Mensaje cifrado en hexadecimal: %s\n", encryptedMessageHex)
 
 	res = c.sendRequest(api.Request{
 		Action:   api.ActionSendMessage,
@@ -733,7 +739,7 @@ func (c *client) sendMessage() {
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 	if res.Success {
-		fmt.Println("Mensaje enviado a", destinatario)
+		fmt.Printf("Mensaje %v enviado a %v", message, destinatario)
 	} else {
 		fmt.Println("Error al enviar el mensaje:", res.Message)
 	}
