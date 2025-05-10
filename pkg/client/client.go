@@ -480,6 +480,8 @@ func (c *client) loginUser() {
 
 			// Descifrar el mensaje
 			_, privateKey := getKeyPairFromPassword(c)
+
+			publicRemitenteKey := 
 			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, nil, privateKey)
 			if !ok {
 				fmt.Println("Error al descifrar el mensaje")
