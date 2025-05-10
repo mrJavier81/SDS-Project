@@ -452,7 +452,7 @@ func (c *client) loginUser() {
 
 			fmt.Println("Mensaje recibido:", message)
 			// Convertir el mensaje a json
-			messageData, err := hex.DecodeString(message)
+			messageData, err := hex.DecodeString(message["message"])
 
 			if err != nil {
 				fmt.Println("Error al decodificar el mensaje:", err)
@@ -478,9 +478,28 @@ func (c *client) loginUser() {
 			copy(nonce[:], encryptedMessage[:24])
 			cipherText := encryptedMessage[24:]
 
+			res = c.sendRequest(api.Request{
+				Action:   api.ActionGetPublicKey,
+				Username: message["sender"],
+				Token:    c.authToken,
+			})
+
+			if !res.Success {
+				fmt.Println("Error al obtener la clave pública del remitente:", res.Message)
+				continue
+			}
+
+			publicKey, err := stringToPublicKey(res.Data)
+			if err != nil {
+				fmt.Println("Error al convertir la clave pública:", err)
+				continue
+			}
+
+			fmt.Println("Clave pública del remitente:", publicKey)
 			// Descifrar el mensaje
 			_, privateKey := getKeyPairFromPassword(c)
-			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, nil, privateKey)
+			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, publicKey, privateKey)
+
 			if !ok {
 				fmt.Println("Error al descifrar el mensaje")
 				continue
@@ -717,16 +736,17 @@ func (c *client) sendMessage() {
 		return
 	}
 
-	finalMessage := append(nonce[:], []byte(message)...)
 	// Cifrar el mensaje con la clave pública del destinatario
-	encryptedMessage := box.Seal(nil, []byte(finalMessage), &nonce, publicKeyReceptor, privateKey)
+	encryptedMessage := box.Seal(nil, []byte(message), &nonce, publicKeyReceptor, privateKey)
 
-	fmt.Printf("Mensaje cifrado: %v con length: %d\n", encryptedMessage, len(encryptedMessage))
+	messageWithNonce := append(nonce[:], encryptedMessage...)
+
+	fmt.Printf("Mensaje cifrado: %v con length: %d\n", messageWithNonce, len(messageWithNonce))
 
 	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
-	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
+	encryptedMessageHex := hex.EncodeToString(messageWithNonce)
 
-	fmt.Printf("Mensaje cifrado en hexadecimal: %s\n", encryptedMessageHex)
+	fmt.Printf("Mensaje cifrado en hexadecimal: %s con lenght: %d\n", encryptedMessageHex, len(encryptedMessageHex))
 
 	res = c.sendRequest(api.Request{
 		Action:   api.ActionSendMessage,
