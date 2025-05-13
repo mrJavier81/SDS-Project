@@ -73,7 +73,9 @@ func (c *client) runLoop() {
 			}
 		} else {
 			// Usuario logueado: Ver datos, Actualizar datos, Logout, Salir
+			//fmt.Printf("Rol: %s\n", c.userRole)
 			options = []string{
+
 				"Ver votaciones",
 				"Ver datos",
 				"Actualizar datos",
