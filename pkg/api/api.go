@@ -18,6 +18,8 @@ const (
 	ActionFetchMessages = "fetchMessages"
 	ActionSendMessage   = "sendMessage"
 	ActionFetchLogs     = "fetchLogs" // Nueva acción para obtener logs
+	ActionGetPublicKey  = "getPublicKey"
+	ActionSavePublicKey = "savePublicKey"
 )
 
 // Request y Response como antes
@@ -38,9 +40,9 @@ type Request struct {
 }
 
 type Response struct {
-	Success  bool     `json:"success"`
-	Message  string   `json:"message"`
-	Token    string   `json:"token,omitempty"`
-	Data     string   `json:"data,omitempty"`
-	Messages []string `json:"messages,omitempty"`
+	Success  bool                `json:"success"`
+	Message  string              `json:"message"`
+	Token    string              `json:"token,omitempty"`
+	Data     string              `json:"data,omitempty"`
+	Messages []map[string]string `json:"messages,omitempty"`
 }
