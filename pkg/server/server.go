@@ -750,9 +750,19 @@ func (s *server) fetchData(req api.Request) api.Response {
 	// Derivamos la clave de cifrado a partir del nombre de usuario
 	key := deriveKey(req.Username)
 
+	if rawData == nil {
+		return api.Response{Success: false, Message: "No hay datos para el usuario"}
+	}
+	// Verificamos si los datos están vacíos
+	if string(rawData) == "" {
+		return api.Response{Success: false, Message: "No hay datos para el usuario"}
+	}
+
 	// Desciframos los datos antes de devolverlos
 	decryptedData, err := decryptHTTPS(rawData, key)
 	if err != nil {
+		fmt.Println("Error al descifrar datos:", err)
+		s.logMessage(fmt.Sprintf("Error al descifrar datos del usuario %s: %v", req.Username, err))
 		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
 	}
 

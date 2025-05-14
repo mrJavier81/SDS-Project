@@ -575,6 +575,8 @@ func (c *client) fetchData() {
 			return
 		}
 
+		fmt.Println("Tus datos descodificados:", payload)
+
 		if len(payload) < 12 {
 			fmt.Println("Datos inválidos: falta el nonce")
 			return
@@ -583,6 +585,11 @@ func (c *client) fetchData() {
 		// Extraer nonce y ciphertext
 		nonce := payload[:12]
 		encryptedData := payload[12:]
+
+		if len(encryptedData) == 0 {
+			fmt.Println("No tienes datos almacenados.")
+			return
+		}
 
 		// Descifrar
 		descifrado, err := decryptData(c, nonce, encryptedData)
