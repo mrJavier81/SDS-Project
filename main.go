@@ -16,6 +16,7 @@ import (
 	"os"
 	"time"
 
+	"prac/pkg/backup"
 	"prac/pkg/client"
 	"prac/pkg/server"
 	"prac/pkg/ui"
@@ -33,6 +34,15 @@ func main() {
 		if err := server.Run(); err != nil {
 			log.Fatalf("Error del servidor: %v\n", err)
 		}
+	}()
+
+	// Iniciar servidor de respaldo en una goroutine
+	go func() {
+		backupServer, err := backup.NewBackupServer("data/backup.db")
+		if err != nil {
+			log.Fatalf("Error al iniciar el servidor de respaldo: %v\n", err)
+		}
+		backupServer.Start()
 	}()
 
 	// Esperamos un tiempo prudencial a que arranque el servidor.

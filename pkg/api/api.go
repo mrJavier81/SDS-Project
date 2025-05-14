@@ -3,17 +3,23 @@
 package api
 
 const (
-	ActionRegister    = "register"
-	ActionLogin       = "login"
-	ActionFetchData   = "fetchData"
-	ActionUpdateData  = "updateData"
-	ActionLogout      = "logout"
-	ActionManageUsers = "manageUsers"
-	ActionCreatePoll  = "createPoll"
-	ActionVote        = "vote"
-	ActionFetchPolls  = "fetchPolls"
-	ActionDeletePoll  = "deletePoll"
-	ActionModifyPoll  = "modifyPoll"
+	ActionRegister      = "register"
+	ActionLogin         = "login"
+	ActionFetchData     = "fetchData"
+	ActionUpdateData    = "updateData"
+	ActionLogout        = "logout"
+	ActionManageUsers   = "manageUsers"
+	ActionCreatePoll    = "createPoll"
+	ActionVote          = "vote"
+	ActionFetchPolls    = "fetchPolls"
+	ActionDeletePoll    = "deletePoll"
+	ActionModifyPoll    = "modifyPoll"
+	ActionCheckUser     = "checkUser"
+	ActionFetchMessages = "fetchMessages"
+	ActionSendMessage   = "sendMessage"
+	ActionFetchLogs     = "fetchLogs" // Nueva acción para obtener logs
+	ActionGetPublicKey  = "getPublicKey"
+	ActionSavePublicKey = "savePublicKey"
 )
 
 // Request y Response como antes
@@ -30,11 +36,13 @@ type Request struct {
 	Options  []string `json:"options,omitempty"`  // Opciones de la votacion
 	Option   string   `json:"option,omitempty"`
 	Creador  string   `json:"creator,omitempty"` // Creador de la votacion
+	Dest     string   `json:"dest,omitempty"`    // Destinatario del mensaje
 }
 
 type Response struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Token   string `json:"token,omitempty"`
-	Data    string `json:"data,omitempty"`
+	Success  bool                `json:"success"`
+	Message  string              `json:"message"`
+	Token    string              `json:"token,omitempty"`
+	Data     string              `json:"data,omitempty"`
+	Messages []map[string]string `json:"messages,omitempty"`
 }
