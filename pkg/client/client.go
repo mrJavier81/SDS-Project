@@ -85,11 +85,18 @@ func (c *client) runLoop() {
 				"Ver datos",
 				"Actualizar datos",
 				"Enviar mensaje",
-				"Cerrar sesión",
-				"Administrar usuarios",
-				"Administrar votaciones",
-				"Salir",
 			}
+
+			if c.userRole == "admin" || c.userRole == "superadmin" {
+				options = append(options, "Administrar votaciones")
+			}
+
+			if c.userRole == "superadmin" {
+				options = append(options, "Administrar usuarios")
+			}
+
+			options = append(options, "Cerrar sesión")
+			options = append(options, "Salir")
 		}
 
 		// Mostramos el menú y obtenemos la elección del usuario.
@@ -120,11 +127,29 @@ func (c *client) runLoop() {
 			case 4:
 				c.sendMessage()
 			case 5:
-				c.logoutUser()
+				if c.userRole == "superadmin" {
+					c.administrarUsuarios()
+				} else if c.userRole == "admin" {
+
+					c.administrarVotaciones()
+
+				} else { // Si no es admin, la opcion de cerrar sesion se muestra
+					c.logoutUser()
+				}
 			case 6:
-				c.administrarUsuarios()
+				if c.userRole == "superadmin" {
+					c.administrarVotaciones()
+				} else {
+					c.logoutUser()
+
+				}
 			case 7:
-				c.administrarVotaciones()
+				if c.userRole == "superadmin" {
+					c.logoutUser()
+				} else {
+					c.log.Println("Saliendo del cliente...")
+					return
+				}
 			case 8:
 				// Opción Salir
 				c.log.Println("Saliendo del cliente...")
