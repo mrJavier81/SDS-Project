@@ -87,9 +87,10 @@ func Run() error {
 	}
 
 	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
-	err = db.Put("polls", []byte("0"), []byte("{}"))
-	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket polls: %v", err)
+
+	// Cargar las encuestas desde la base de datos al mapa en memoria
+	if err := srv.loadPolls(); err != nil {
+		return fmt.Errorf("error al cargar encuestas desde la base de datos: %v", err)
 	}
 
 	idActual, _ := db.Get("config", []byte("nextPollID"))
@@ -97,9 +98,12 @@ func Run() error {
 	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
 
 	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
-	err = db.Put("config", []byte("nextPollID"), []byte("1"))
-	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket config: %v", err)
+	if idActual == nil || string(idActual) == "" {
+
+		err = db.Put("config", []byte("nextPollID"), []byte("1"))
+		if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
+			return fmt.Errorf("error al crear el bucket config: %v", err)
+		}
 	}
 
 	idActual, _ = db.Get("config", []byte("nextPollID"))
@@ -225,6 +229,9 @@ func (s *server) loadPolls() error {
 	// Recorrer las claves y cargar cada encuesta
 	for _, key := range keys {
 		// Obtener los datos de la encuesta desde la base de datos
+		if string(key) == "__init__" {
+			continue
+		}
 		data, err := s.db.Get("polls", key)
 		if err != nil {
 			return fmt.Errorf("error al obtener encuesta con ID %s: %v", string(key), err)
@@ -335,7 +342,11 @@ func (s *server) createPoll(req api.Request) api.Response {
 
 	s.polls[req.PollID] = poll
 
-	s.logMessage(fmt.Sprintf("Encuesta creada exitosamente: %s por %s", req.Question, req.Username))
+	pollData, err := poll.ToJSON()
+
+	s.db.Put("polls", []byte(pollID), []byte(pollData))
+
+	s.logMessage(fmt.Sprintf("Encuesta creada exitosamente: %s por %s", req.Question, req.Creador))
 	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
 }
 
@@ -357,7 +368,7 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	}
 
 	pollList := "\n"
-	for id, poll := range s.polls {
+	for _, poll := range s.polls {
 
 		if filtro == "past" {
 			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.fechaFin)
@@ -376,7 +387,7 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
-			id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
+			poll.ID, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
 	}
 
 	if pollList == "\n" {
@@ -404,6 +415,35 @@ func (s *server) vote(req api.Request) api.Response {
 
 	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s por %s", req.PollID, req.Username))
 	return api.Response{Success: true, Message: "Voto registrado"}
+}
+
+func (s *server) getPollsFromDB() {
+	// Obtener todas las claves en el namespace "polls"
+	keys, err := s.db.ListKeys("polls")
+	if err != nil {
+		s.logMessage(fmt.Sprintf("Error al listar encuestas: %v", err))
+		return
+	}
+
+	// Recorrer las claves y cargar cada encuesta
+	for _, key := range keys {
+		// Obtener los datos de la encuesta desde la base de datos
+		data, err := s.db.Get("polls", key)
+		if err != nil {
+			s.logMessage(fmt.Sprintf("Error al obtener encuesta con ID %s: %v", string(key), err))
+			continue
+		}
+
+		// Deserializar los datos en una estructura Poll
+		var poll Poll
+		if err := json.Unmarshal(data, &poll); err != nil {
+			s.logMessage(fmt.Sprintf("Error al deserializar encuesta con ID %s: %v", string(key), err))
+			continue
+		}
+
+		// Añadir la encuesta al mapa en memoria
+		s.polls[string(key)] = &poll
+	}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.

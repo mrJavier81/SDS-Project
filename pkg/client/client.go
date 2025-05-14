@@ -249,16 +249,7 @@ func (c *client) verVotaciones() {
 	switch choice {
 	case 1:
 		// Ver votaciones activas
-		res := c.sendRequest(api.Request{
-			Action: api.ActionFetchPolls,
-			Role:   c.userRole,
-		})
-		if res.Success {
-			fmt.Println("Votaciones activas:")
-			fmt.Println(res.Data)
-		} else {
-			fmt.Println("Error:", res.Message)
-		}
+		c.verVotacionesActivas()
 	case 2:
 		// Ver votaciones en las que participas
 		res := c.sendRequest(api.Request{
@@ -292,6 +283,25 @@ func (c *client) verVotaciones() {
 
 	ui.Pause("Pulsa [Enter] para continuar...")
 	c.verVotaciones()
+}
+
+func (c *client) verVotacionesActivas() {
+	ui.ClearScreen()
+	fmt.Println("** Ver votaciones activas **")
+
+	// Enviar solicitud al servidor para obtener las votaciones activas
+	res := c.sendRequest(api.Request{
+		Action: api.ActionFetchPolls,
+		Role:   c.userRole,
+	})
+
+	if res.Success {
+		fmt.Println("Votaciones activas:")
+		fmt.Println(res.Data)
+	} else {
+		fmt.Println("Error al obtener votaciones:", res.Message)
+	}
+	ui.ReadInput("Selecciona una votación o pulsa [Enter] para volver al menú principal")
 }
 
 func (c *client) administrarUsuarios() {
