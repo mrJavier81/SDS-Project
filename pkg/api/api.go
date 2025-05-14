@@ -14,6 +14,7 @@ const (
 	ActionFetchPolls    = "fetchPolls"
 	ActionDeletePoll    = "deletePoll"
 	ActionModifyPoll    = "modifyPoll"
+	ActionGetPollByID   = "getPollByID"
 	ActionCheckUser     = "checkUser"
 	ActionFetchMessages = "fetchMessages"
 	ActionSendMessage   = "sendMessage"
@@ -44,5 +45,6 @@ type Response struct {
 	Message  string              `json:"message"`
 	Token    string              `json:"token,omitempty"`
 	Data     string              `json:"data,omitempty"`
+	Cantidad int                 `json:"cantidad,omitempty"`
 	Messages []map[string]string `json:"messages,omitempty"`
 }

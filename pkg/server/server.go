@@ -191,6 +191,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.createPoll(req)
 	case api.ActionVote:
 		res = s.vote(req)
+	case api.ActionGetPollByID:
+		res = s.getPollByID(req.PollID)
 	case api.ActionFetchMessages:
 		res = s.fetchMessages(req)
 	case api.ActionCheckUser:
@@ -229,6 +231,8 @@ func (s *server) loadPolls() error {
 	// Recorrer las claves y cargar cada encuesta
 	for _, key := range keys {
 		// Obtener los datos de la encuesta desde la base de datos
+
+		// Ignorar la clave "__init__" que se usa para inicializar el bucket
 		if string(key) == "__init__" {
 			continue
 		}
@@ -368,7 +372,13 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	}
 
 	pollList := "\n"
+	pollsListadas := 0
 	for _, poll := range s.polls {
+
+		if poll.ID == "__init__" {
+			fmt.Println("Poll ID es __init__, continuando...")
+			continue
+		}
 
 		if filtro == "past" {
 			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.fechaFin)
@@ -388,13 +398,14 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
 			poll.ID, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
+		pollsListadas++
 	}
 
 	if pollList == "\n" {
 		return api.Response{Success: false, Message: "No hay encuestas que coincidan con el filtro"}
 	}
 
-	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
+	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList, Cantidad: pollsListadas}
 }
 
 func (s *server) vote(req api.Request) api.Response {
@@ -417,33 +428,20 @@ func (s *server) vote(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Voto registrado"}
 }
 
-func (s *server) getPollsFromDB() {
-	// Obtener todas las claves en el namespace "polls"
-	keys, err := s.db.ListKeys("polls")
+func (s *server) getPollByID(pollID string) api.Response {
+	// Verificar si la encuesta existe en el mapa en memoria
+	poll, exists := s.polls[pollID]
+	if !exists {
+		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	// Serializar la encuesta a JSON para enviarla al cliente
+	pollData, err := json.Marshal(poll)
 	if err != nil {
-		s.logMessage(fmt.Sprintf("Error al listar encuestas: %v", err))
-		return
+		return api.Response{Success: false, Message: "Error al serializar la encuesta"}
 	}
 
-	// Recorrer las claves y cargar cada encuesta
-	for _, key := range keys {
-		// Obtener los datos de la encuesta desde la base de datos
-		data, err := s.db.Get("polls", key)
-		if err != nil {
-			s.logMessage(fmt.Sprintf("Error al obtener encuesta con ID %s: %v", string(key), err))
-			continue
-		}
-
-		// Deserializar los datos en una estructura Poll
-		var poll Poll
-		if err := json.Unmarshal(data, &poll); err != nil {
-			s.logMessage(fmt.Sprintf("Error al deserializar encuesta con ID %s: %v", string(key), err))
-			continue
-		}
-
-		// Añadir la encuesta al mapa en memoria
-		s.polls[string(key)] = &poll
-	}
+	return api.Response{Success: true, Message: "Encuesta encontrada", Data: string(pollData)}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.

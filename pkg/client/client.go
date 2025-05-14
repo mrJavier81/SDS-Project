@@ -286,6 +286,7 @@ func (c *client) verVotaciones() {
 }
 
 func (c *client) verVotacionesActivas() {
+
 	ui.ClearScreen()
 	fmt.Println("** Ver votaciones activas **")
 
@@ -298,10 +299,30 @@ func (c *client) verVotacionesActivas() {
 	if res.Success {
 		fmt.Println("Votaciones activas:")
 		fmt.Println(res.Data)
+
 	} else {
 		fmt.Println("Error al obtener votaciones:", res.Message)
 	}
-	ui.ReadInput("Selecciona una votación o pulsa [Enter] para volver al menú principal")
+	input := ui.ReadInput("Selecciona una votación o pulsa [Enter] para volver al menú principal")
+
+	if input == "" {
+		return
+	}
+
+	res = c.sendRequest(api.Request{
+		Action: api.ActionGetPollByID,
+		PollID: input,
+	})
+
+	if res.Success {
+		fmt.Println("Detalles de la votación:")
+		fmt.Println(res.Data)
+
+		// Aquí puedes agregar más lógica para interactuar con la votación
+	} else {
+		fmt.Println("Error al obtener detalles de la votación:", res.Message)
+	}
+
 }
 
 func (c *client) administrarUsuarios() {
