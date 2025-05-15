@@ -425,6 +425,13 @@ func (s *server) vote(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al registrar voto en la encuesta %s: %v", req.PollID, err))
 		return api.Response{Success: false, Message: err.Error()}
 	}
+	pollData, err := json.Marshal(poll)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al serializar la encuesta actualizada"}
+	}
+	if err := s.db.Put("polls", []byte(poll.ID), pollData); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar la encuesta actualizada"}
+	}
 
 	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s por %s", req.PollID, req.Username))
 	return api.Response{Success: true, Message: "Voto registrado"}

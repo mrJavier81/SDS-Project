@@ -179,7 +179,27 @@ func (c *client) administrarVotaciones() {
 	case 1:
 		// Crear votación
 		question := ui.ReadInput("Pregunta de la votación")
-		options := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
+		rawOptions := strings.Split(ui.ReadInput("Opciones de la votación (separadas por comas)"), ",")
+
+		// Eliminar opciones vacías y duplicadas
+		optionSet := make(map[string]struct{})
+		var options []string
+		for _, opt := range rawOptions {
+			opt = strings.TrimSpace(opt)
+			if opt == "" {
+				continue
+			}
+			if _, exists := optionSet[opt]; !exists {
+				optionSet[opt] = struct{}{}
+				options = append(options, opt)
+			}
+		}
+
+		if len(options) <= 1 {
+			fmt.Println("Debes introducir al menos una opción válida y no repetida.")
+			return
+		}
+
 		duration := ui.ReadInput("Duración de la votación (en horas)")
 		creador := c.currentUser
 		res := c.sendRequest(api.Request{
@@ -195,7 +215,26 @@ func (c *client) administrarVotaciones() {
 		// Modificar votación
 		pollID := ui.ReadInput("ID de la votación a modificar")
 		newQuestion := ui.ReadInput("Nueva pregunta de la votación")
-		newOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
+		rawOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
+
+		// Eliminar opciones vacías y duplicadas
+		optionSet := make(map[string]struct{})
+		var newOptions []string
+		for _, opt := range rawOptions {
+			opt = strings.TrimSpace(opt)
+			if opt == "" {
+				continue
+			}
+			if _, exists := optionSet[opt]; !exists {
+				optionSet[opt] = struct{}{}
+				newOptions = append(newOptions, opt)
+			}
+		}
+
+		if len(newOptions) == 0 {
+			fmt.Println("Debes introducir al menos una opción válida y no repetida.")
+			return
+		}
 
 		res := c.sendRequest(api.Request{
 			Action:   api.ActionModifyPoll,
@@ -315,17 +354,49 @@ func (c *client) verVotacionesActivas() {
 	})
 
 	if res.Success {
-		fmt.Println("Detalles de la votación:")
-		fmt.Println(res.Data)
+		var poll struct {
+			ID           string          `json:"ID"`
+			Question     string          `json:"Question"`
+			Options      map[string]int  `json:"Options"`
+			FechaInicio  string          `json:"FechaInicio"`
+			FechaFin     string          `json:"FechaFin"`
+			Creador      string          `json:"Creador"`
+			Estado       string          `json:"Estado"`
+			Participants map[string]bool `json:"Participants"`
+		}
+		err := json.Unmarshal([]byte(res.Data), &poll)
+		if err != nil {
+			fmt.Println("Error al procesar la encuesta:", err)
+			return
+		}
+		fmt.Println("------ Detalles de la votación ------")
+		fmt.Printf("ID: %s\n", poll.ID)
+		fmt.Printf("Pregunta: %s\n", poll.Question)
+		fmt.Printf("Opciones:\n")
+		for opt, votos := range poll.Options {
+			fmt.Printf("  - %s: %d votos\n", opt, votos)
+		}
+		fmt.Printf("Creador: %s\n", poll.Creador)
+		fmt.Printf("Estado: %s\n", poll.Estado)
+		fmt.Printf("Fecha de inicio: %s\n", poll.FechaInicio)
+		fmt.Printf("Fecha de fin: %s\n", poll.FechaFin)
+		fmt.Printf("Participantes: %d\n", len(poll.Participants))
+		fmt.Println("-------------------------------------")
+		if ui.ReadInput("¿Quieres votar? (s/n)") == "s" {
+			// Votar
+			option := ui.ReadInput("Selecciona una opción para votar")
+			res := c.sendRequest(api.Request{
+				Action: api.ActionVote,
+				PollID: poll.ID,
+				Option: option,
+			})
+			if res.Success {
+				fmt.Println("Voto registrado con éxito.")
+			} else {
+				fmt.Println("Error al registrar el voto:", res.Message)
+			}
+		}
 
-		// Dividir poll en sus componentes
-		//poll := res.Data.Unmarshal()
-
-		// Preguntamos al usuario que acción quiere realizar:
-
-		ui.ReadInput("¿Quieres votar? (s/n)")
-
-		// Aquí puedes agregar más lógica para interactuar con la votación
 	} else {
 		fmt.Println("Error al obtener detalles de la votación:", res.Message)
 	}
