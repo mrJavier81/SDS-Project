@@ -344,9 +344,11 @@ func (s *server) createPoll(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
 
-	s.polls[req.PollID] = poll
+	s.polls[pollID] = poll
 
 	pollData, err := poll.ToJSON()
+
+	fmt.Printf("Poll data: %s\n", pollData)
 
 	s.db.Put("polls", []byte(pollID), []byte(pollData))
 
@@ -381,7 +383,7 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 		}
 
 		if filtro == "past" {
-			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.fechaFin)
+			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.FechaFin)
 			if err != nil {
 				continue
 			}
@@ -397,7 +399,7 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
-			poll.ID, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
+			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, poll.Participants)
 		pollsListadas++
 	}
 

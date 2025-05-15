@@ -318,6 +318,13 @@ func (c *client) verVotacionesActivas() {
 		fmt.Println("Detalles de la votación:")
 		fmt.Println(res.Data)
 
+		// Dividir poll en sus componentes
+		//poll := res.Data.Unmarshal()
+
+		// Preguntamos al usuario que acción quiere realizar:
+
+		ui.ReadInput("¿Quieres votar? (s/n)")
+
 		// Aquí puedes agregar más lógica para interactuar con la votación
 	} else {
 		fmt.Println("Error al obtener detalles de la votación:", res.Message)

@@ -12,10 +12,10 @@ type Poll struct {
 	Question     string          // La pregunta de la encuesta
 	Options      map[string]int  // Opciones y sus conteos de votos
 	FechaInicio  string          // Fecha de inicio de la encuesta
-	fechaFin     string          // Fecha de fin de la encuesta
+	FechaFin     string          // Fecha de fin de la encuesta
 	Creador      string          // Usuario que creó la encuesta
-	estado       string          // Estado de la encuesta (abierta/cerrada)
-	participants map[string]bool // Registro de usuarios que han participado
+	Estado       string          // Estado de la encuesta (abierta/cerrada)
+	Participants map[string]bool // Registro de usuarios que han participado
 }
 
 // NewPoll crea una nueva encuesta con la pregunta y opciones dadas.
@@ -27,34 +27,34 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 
 	pollEndDate := time.Now().Add(time.Duration(duracionHoras) * time.Hour).Format("2006-01-02 15:04:05")
 	fechaInicio := time.Now().Format("2006-01-02 15:04:05")
-	//fmt.Printf("Creando poll con fecha limite %s y fecha de inicio %s\n", pollEndDate, fechaInicio)
+	fmt.Printf("Creando poll con fecha limite %s y fecha de inicio %s\n", pollEndDate, fechaInicio)
 	return &Poll{
 		ID:           id,
 		Question:     question,
 		Options:      pollOptions,
 		FechaInicio:  fechaInicio,
-		fechaFin:     pollEndDate,
+		FechaFin:     pollEndDate,
 		Creador:      creador,
-		estado:       "abierta",
-		participants: make(map[string]bool),
+		Estado:       "abierta",
+		Participants: make(map[string]bool),
 	}
 }
 
 // AddParticipant agrega un usuario al registro de participantes.
 func (p *Poll) AddParticipant(user string) error {
 
-	if p.participants[user] {
+	if p.Participants[user] {
 		return fmt.Errorf("el usuario '%s' ya ha participado", user)
 	}
 
-	p.participants[user] = true
+	p.Participants[user] = true
 	return nil
 }
 
 // HasParticipated verifica si un usuario ya ha participado.
 func (p *Poll) HasParticipated(user string) bool {
 
-	return p.participants[user]
+	return p.Participants[user]
 }
 
 // Vote permite a un usuario votar por una opción.
