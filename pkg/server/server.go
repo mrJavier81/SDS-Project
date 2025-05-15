@@ -505,9 +505,9 @@ func (s *server) fetchMessages(req api.Request) api.Response {
 	}
 
 	// Convertir el JSON a un slice de mapas
-	var messages []string
+	var messages []map[string]string
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
-		return api.Response{Success: false, Message: "Error al decodificar mensajes"}
+		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
 	}
 
 	return api.Response{
@@ -530,13 +530,17 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 	}
 
 	// Decodificar los mensajes existentes
-	var messages []string
+	var messages []map[string]string
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
 		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
 	}
 
-	// Agregar el nuevo mensaje
-	messages = append(messages, message)
+	// Agregar el nuevo mensaje con el remitente
+	newMessage := map[string]string{
+		"sender":  sender,
+		"message": message,
+	}
+	messages = append(messages, newMessage)
 
 	// Codificar los mensajes actualizados a JSON
 	messagesJSON, err = json.Marshal(messages)
@@ -555,6 +559,7 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 		Data:    fmt.Sprintf("Enviado a %s", username),
 	}
 }
+
 func (s *server) checkUser(req api.Request) api.Response {
 	// Chequeo de credenciales
 	if req.Username == "" || req.Token == "" {

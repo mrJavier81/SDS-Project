@@ -452,7 +452,7 @@ func (c *client) loginUser() {
 
 			fmt.Println("Mensaje recibido:", message)
 			// Convertir el mensaje a json
-			messageData, err := hex.DecodeString(message)
+			messageData, err := hex.DecodeString(message["message"])
 
 			if err != nil {
 				fmt.Println("Error al decodificar el mensaje:", err)
@@ -460,8 +460,6 @@ func (c *client) loginUser() {
 			}
 
 			fmt.Println("Mensaje decodificado:", string(messageData))
-
-			// Hecho mediante vibe coding
 
 			encryptedMessage := messageData
 			if err != nil {
@@ -478,13 +476,35 @@ func (c *client) loginUser() {
 			copy(nonce[:], encryptedMessage[:24])
 			cipherText := encryptedMessage[24:]
 
+			res = c.sendRequest(api.Request{
+				Action:   api.ActionGetPublicKey,
+				Username: message["sender"],
+				Token:    c.authToken,
+			})
+
+			if !res.Success {
+				fmt.Println("Error al obtener la clave pública del remitente:", res.Message)
+				continue
+			}
+
+			publicKey, err := stringToPublicKey(res.Data)
+			if err != nil {
+				fmt.Println("Error al convertir la clave pública:", err)
+				continue
+			}
+
+			fmt.Printf("Mensaje cifrado recibido: %x\n", cipherText)
+
+			fmt.Println("Clave pública del remitente:", publicKey)
 			// Descifrar el mensaje
 			_, privateKey := getKeyPairFromPassword(c)
+			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, publicKey, privateKey)
 
-			publicRemitenteKey := 
-			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, nil, privateKey)
 			if !ok {
 				fmt.Println("Error al descifrar el mensaje")
+				fmt.Printf("Clave publica: %v con len %d\n", publicKey, len(publicKey))
+				fmt.Printf("Clave privada: %v con len %d\n", privateKey, len(privateKey))
+				fmt.Printf("Nonce: %v con len %d\n", nonce, len(nonce))
 				continue
 			}
 
@@ -718,11 +738,22 @@ func (c *client) sendMessage() {
 		fmt.Printf("Error al generar nonce: %v", err)
 		return
 	}
+
+	fmt.Printf("Nonce: %v con length: %d\n", nonce, len(nonce))
+
 	// Cifrar el mensaje con la clave pública del destinatario
 	encryptedMessage := box.Seal(nil, []byte(message), &nonce, publicKeyReceptor, privateKey)
 
+	messageWithNonce := append(nonce[:], encryptedMessage...)
+
+	fmt.Printf("Mensaje cifrado (bytes): %x\n", encryptedMessage)
+
+	fmt.Printf("Mensaje cifrado: %v con length: %d\n", messageWithNonce, len(messageWithNonce))
+
 	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
-	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
+	encryptedMessageHex := hex.EncodeToString(messageWithNonce)
+
+	fmt.Printf("Mensaje cifrado en hexadecimal: %s con lenght: %d\n", encryptedMessageHex, len(encryptedMessageHex))
 
 	res = c.sendRequest(api.Request{
 		Action:   api.ActionSendMessage,
@@ -735,7 +766,7 @@ func (c *client) sendMessage() {
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 	if res.Success {
-		fmt.Println("Mensaje enviado a", destinatario)
+		fmt.Printf("Mensaje %v enviado a %v", message, destinatario)
 	} else {
 		fmt.Println("Error al enviar el mensaje:", res.Message)
 	}
@@ -874,6 +905,8 @@ func sendPublicKeyToServer(c *client) {
 	}
 
 	pKeySend := hex.EncodeToString(publicKey[:])
+
+	fmt.Printf("Clave pública generada: %s\n", pKeySend)
 
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionSavePublicKey,
