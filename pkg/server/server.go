@@ -206,6 +206,12 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case api.ActionSavePublicKey:
 		res = s.savePublicKey(req)
 
+	case api.ActionSavePrivateKey:
+		res = s.savePrivateKey(req)
+
+	case api.ActionFetchPrivateKey:
+		res = s.fetchPrivateKey(req)
+
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -686,19 +692,30 @@ func (s *server) fetchMessages(req api.Request) api.Response {
 	// Obtener los mensajes en formato JSON desde la base de datos
 	messagesJSON, err := s.db.Get("messages", []byte(req.Username))
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al obtener mensajes"}
+		// Si no hay mensajes, devolver lista vacía en formato JSON
+		return api.Response{
+			Success: true,
+			Message: "No hay mensajes",
+			Data:    "[]",
+		}
 	}
 
-	// Convertir el JSON a un slice de mapas
+	// Validar que el JSON sea decodificable
 	var messages []map[string]string
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
 		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
 	}
 
+	// Reconvertimos a JSON válido (opcional, pero más seguro)
+	data, err := json.Marshal(messages)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al reserializar mensajes"}
+	}
+
 	return api.Response{
-		Success:  true,
-		Message:  "Mensajes obtenidos",
-		Messages: messages, // Devolver los mensajes como están
+		Success: true,
+		Message: "Mensajes obtenidos",
+		Data:    string(data),
 	}
 }
 
@@ -1067,4 +1084,39 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 		Message: "Logs obtenidos correctamente",
 		Data:    strings.Join(logs, "\n"),
 	}
+}
+
+func (s *server) savePrivateKey(req api.Request) api.Response {
+	// Guardar la clave privada del usuario
+	if req.Username == "" || req.Data == "" {
+		return api.Response{Success: false, Message: "Faltan datos para guardar clave privada"}
+	}
+
+	fmt.Println("Guardando clave privada para el usuario:", req.Username)
+	if err := s.db.Put("privateKeys", []byte(req.Username), []byte(req.Data)); err != nil {
+		fmt.Print("Error al guardar clave privada database:", err, "\n")
+		return api.Response{Success: false, Message: "Error al guardar clave privada"}
+	}
+
+	fmt.Print("Clave privada guardada: ", req.Data, "\n")
+
+	return api.Response{Success: true, Message: "Clave privada guardada"}
+}
+
+func (s *server) fetchPrivateKey(req api.Request) api.Response {
+	// Obtener la clave privada del usuario
+	if req.Username == "" {
+		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+	}
+
+	privateKey, err := s.db.Get("privateKeys", []byte(req.Username))
+
+	if err != nil {
+		if strings.Contains(err.Error(), "clave no encontrada") {
+			return api.Response{Success: false, Message: "Clave privada no encontrada"}
+		}
+		return api.Response{Success: false, Message: "Error al obtener clave privada"}
+	}
+
+	return api.Response{Success: true, Message: "Clave privada obtenida", Data: string(privateKey)}
 }
