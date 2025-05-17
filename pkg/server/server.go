@@ -87,6 +87,47 @@ func Run() error {
 	}
 
 	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
+
+	// Cargar las encuestas desde la base de datos al mapa en memoria
+	if err := srv.loadPolls(); err != nil {
+		return fmt.Errorf("error al cargar encuestas desde la base de datos: %v", err)
+	}
+
+	idActual, _ := db.Get("config", []byte("nextPollID"))
+
+	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
+
+	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
+	if idActual == nil || string(idActual) == "" {
+
+		err = db.Put("config", []byte("nextPollID"), []byte("1"))
+		if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
+			return fmt.Errorf("error al crear el bucket config: %v", err)
+		}
+	}
+
+	idActual, _ = db.Get("config", []byte("nextPollID"))
+
+	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
+
+	// Inicializamos todos los buckets necesarios
+	bucketsNecesarios := []string{
+		"auth",       // Credenciales de usuarios
+		"roles",      // Roles de usuarios
+		"sessions",   // Tokens de sesión
+		"superadmin", // Lista de superadmins
+		"messages",   // Mensajes entre usuarios
+		"polls",      // Encuestas (si las usas)
+		"pKeys",      // Claves públicas de usuarios
+	}
+
+	for _, bucket := range bucketsNecesarios {
+		if err := initBucket(srv.db, bucket); err != nil {
+			return err
+		}
+	}
+
+	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
 	err = db.Put("polls", []byte("0"), []byte("{}"))
 	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
 		return fmt.Errorf("error al crear el bucket polls: %v", err)
@@ -187,6 +228,8 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		res = s.createPoll(req)
 	case api.ActionVote:
 		res = s.vote(req)
+	case api.ActionGetPollByID:
+		res = s.getPollByID(req.PollID)
 	case api.ActionFetchMessages:
 		res = s.fetchMessages(req)
 	case api.ActionCheckUser:
@@ -225,6 +268,11 @@ func (s *server) loadPolls() error {
 	// Recorrer las claves y cargar cada encuesta
 	for _, key := range keys {
 		// Obtener los datos de la encuesta desde la base de datos
+
+		// Ignorar la clave "__init__" que se usa para inicializar el bucket
+		if string(key) == "__init__" {
+			continue
+		}
 		data, err := s.db.Get("polls", key)
 		if err != nil {
 			return fmt.Errorf("error al obtener encuesta con ID %s: %v", string(key), err)
@@ -332,19 +380,16 @@ func (s *server) createPoll(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al crear la encuesta: %s", req.Question))
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
-	fmt.Printf("Encuesta creada: %s con pregunta %s y creador %s\n", pollID, req.Question, creador)
 
-	// Guardar la encuesta en la base de datos
-	pollData, err := json.Marshal(poll)
-	if err != nil {
-		return api.Response{Success: false, Message: "Error al serializar la encuesta"}
-	}
-	if err := s.db.Put("polls", []byte(pollID), pollData); err != nil {
-		return api.Response{Success: false, Message: "Error al guardar la encuesta en la base de datos"}
-	}
-	s.polls[req.PollID] = poll
+	s.polls[pollID] = poll
 
-	s.logMessage(fmt.Sprintf("Encuesta creada exitosamente: %s por %s", req.Question, req.Username))
+	pollData, err := poll.ToJSON()
+
+	fmt.Printf("Poll data: %s\n", pollData)
+
+	s.db.Put("polls", []byte(pollID), []byte(pollData))
+
+	s.logMessage(fmt.Sprintf("Encuesta creada exitosamente: %s por %s", req.Question, req.Creador))
 	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
 }
 
@@ -366,10 +411,16 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	}
 
 	pollList := "\n"
-	for id, poll := range s.polls {
+	pollsListadas := 0
+	for _, poll := range s.polls {
+
+		if poll.ID == "__init__" {
+			fmt.Println("Poll ID es __init__, continuando...")
+			continue
+		}
 
 		if filtro == "past" {
-			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.fechaFin)
+			fechaFin, err := time.Parse("2006-01-02 15:04:05", poll.FechaFin)
 			if err != nil {
 				continue
 			}
@@ -385,14 +436,15 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
-			id, poll.estado, poll.Question, poll.Options, poll.Creador, poll.fechaFin, poll.participants)
+			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, poll.Participants)
+		pollsListadas++
 	}
 
 	if pollList == "\n" {
 		return api.Response{Success: false, Message: "No hay encuestas que coincidan con el filtro"}
 	}
 
-	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList}
+	return api.Response{Success: true, Message: "Encuestas listadas", Data: pollList, Cantidad: pollsListadas}
 }
 
 func (s *server) vote(req api.Request) api.Response {
@@ -410,9 +462,32 @@ func (s *server) vote(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al registrar voto en la encuesta %s: %v", req.PollID, err))
 		return api.Response{Success: false, Message: err.Error()}
 	}
+	pollData, err := json.Marshal(poll)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al serializar la encuesta actualizada"}
+	}
+	if err := s.db.Put("polls", []byte(poll.ID), pollData); err != nil {
+		return api.Response{Success: false, Message: "Error al guardar la encuesta actualizada"}
+	}
 
 	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s por %s", req.PollID, req.Username))
 	return api.Response{Success: true, Message: "Voto registrado"}
+}
+
+func (s *server) getPollByID(pollID string) api.Response {
+	// Verificar si la encuesta existe en el mapa en memoria
+	poll, exists := s.polls[pollID]
+	if !exists {
+		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	// Serializar la encuesta a JSON para enviarla al cliente
+	pollData, err := json.Marshal(poll)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al serializar la encuesta"}
+	}
+
+	return api.Response{Success: true, Message: "Encuesta encontrada", Data: string(pollData)}
 }
 
 // manageUsers permite a los administradores listar, eliminar y modificar roles de usuarios.
@@ -759,9 +834,19 @@ func (s *server) fetchData(req api.Request) api.Response {
 	// Derivamos la clave de cifrado a partir del nombre de usuario
 	key := deriveKey(req.Username)
 
+	if rawData == nil {
+		return api.Response{Success: false, Message: "No hay datos para el usuario"}
+	}
+	// Verificamos si los datos están vacíos
+	if string(rawData) == "" {
+		return api.Response{Success: false, Message: "No hay datos para el usuario"}
+	}
+
 	// Desciframos los datos antes de devolverlos
 	decryptedData, err := decryptHTTPS(rawData, key)
 	if err != nil {
+		fmt.Println("Error al descifrar datos:", err)
+		s.logMessage(fmt.Sprintf("Error al descifrar datos del usuario %s: %v", req.Username, err))
 		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
 	}
 
