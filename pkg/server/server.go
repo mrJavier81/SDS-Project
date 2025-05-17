@@ -110,43 +110,6 @@ func Run() error {
 
 	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
 
-	// Inicializamos todos los buckets necesarios
-	bucketsNecesarios := []string{
-		"auth",       // Credenciales de usuarios
-		"roles",      // Roles de usuarios
-		"sessions",   // Tokens de sesión
-		"superadmin", // Lista de superadmins
-		"messages",   // Mensajes entre usuarios
-		"polls",      // Encuestas (si las usas)
-		"pKeys",      // Claves públicas de usuarios
-	}
-
-	for _, bucket := range bucketsNecesarios {
-		if err := initBucket(srv.db, bucket); err != nil {
-			return err
-		}
-	}
-
-	// Crear el bucket "polls" si no existe para que no falle si se intenta acceder a las polls
-	err = db.Put("polls", []byte("0"), []byte("{}"))
-	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket polls: %v", err)
-	}
-
-	idActual, _ := db.Get("config", []byte("nextPollID"))
-
-	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
-
-	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
-	err = db.Put("config", []byte("nextPollID"), []byte("1"))
-	if err != nil && !strings.Contains(err.Error(), "bucket no encontrado") {
-		return fmt.Errorf("error al crear el bucket config: %v", err)
-	}
-
-	idActual, _ = db.Get("config", []byte("nextPollID"))
-
-	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
-
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
 	superadmins := []string{"Mirri", "Saulet", "Fabix"}
 	for _, superadmin := range superadmins {
