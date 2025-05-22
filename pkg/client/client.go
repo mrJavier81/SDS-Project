@@ -58,107 +58,130 @@ func Run() {
 func (c *client) runLoop() {
 	for {
 		ui.ClearScreen()
-
-		// Construimos un título que muestre el usuario logueado, si lo hubiera.
-		var title string
-		if c.currentUser == "" {
-			title = "Menú"
-		} else {
-			title = fmt.Sprintf("Menú (%s)", c.currentUser)
+		title := "Menú"
+		if c.currentUser != "" {
+			title = fmt.Sprintf("Menú (%s) — rol: %s", c.currentUser, c.userRole)
 		}
 
-		// Generamos las opciones dinámicamente, según si hay un login activo.
 		var options []string
+
 		if c.currentUser == "" {
-			// Usuario NO logueado: Registro, Login, Salir
+			// no autenticado
 			options = []string{
 				"Registrar usuario",
 				"Iniciar sesión",
 				"Salir",
 			}
 		} else {
-			// Usuario logueado: Ver datos, Actualizar datos, Logout, Salir
-			//fmt.Printf("Rol: %s\n", c.userRole)
-			options = []string{
-
-				"Ver votaciones",
-				"Ver datos",
-				"Actualizar datos",
-				"Enviar mensaje",
+			// autenticado: menú por rol
+			switch c.userRole {
+			case "superadmin":
+				options = []string{
+					"Ver votaciones",
+					"Ver datos",
+					"Actualizar datos",
+					"Enviar mensaje",
+					"Administrar votaciones",
+					"Administrar usuarios",
+					"Ver logs del sistema",
+					"Cerrar sesión",
+					"Salir",
+				}
+			case "admin":
+				options = []string{
+					"Ver votaciones",
+					"Ver datos",
+					"Actualizar datos",
+					"Enviar mensaje",
+					"Administrar votaciones",
+					"Cerrar sesión",
+					"Salir",
+				}
+			default: // "user"
+				options = []string{
+					"Ver votaciones",
+					"Ver datos",
+					"Actualizar datos",
+					"Enviar mensaje",
+					"Cerrar sesión",
+					"Salir",
+				}
 			}
-
-			if c.userRole == "admin" || c.userRole == "superadmin" {
-				options = append(options, "Administrar votaciones")
-			}
-
-			if c.userRole == "superadmin" {
-				options = append(options, "Administrar usuarios")
-			}
-
-			options = append(options, "Cerrar sesión")
-			options = append(options, "Salir")
 		}
 
-		// Mostramos el menú y obtenemos la elección del usuario.
 		choice := ui.PrintMenu(title, options)
 
-		// Hay que mapear la opción elegida según si está logueado o no.
+		// DESPACHAMOS según el rol y la elección
 		if c.currentUser == "" {
-			// Caso NO logueado
 			switch choice {
 			case 1:
 				c.registerUser()
 			case 2:
 				c.loginUser()
 			case 3:
-				// Opción Salir
-				c.log.Println("Saliendo del cliente...")
+				c.log.Println("Saliendo del cliente…")
 				return
 			}
 		} else {
-			// Caso logueado
+			// usuario autenticado
+			idx := 0
+			// estas acciones van en todos los roles
 			switch choice {
-			case 1:
+			case idx + 1:
 				c.verVotaciones()
-			case 2:
+				idx++
+			case idx + 2:
 				c.fetchData()
-			case 3:
+				idx++
+			case idx + 3:
 				c.updateData()
-			case 4:
+				idx++
+			case idx + 4:
 				c.sendMessage()
-			case 5:
-				if c.userRole == "superadmin" {
-					c.administrarUsuarios()
-				} else if c.userRole == "admin" {
-
-					c.administrarVotaciones()
-
-				} else { // Si no es admin, la opcion de cerrar sesion se muestra
-					c.logoutUser()
+				idx++
+			default:
+				// los siguientes dependen del rol
+				switch c.userRole {
+				case "superadmin":
+					// índices 5,6,7,8,9
+					switch choice {
+					case 5:
+						c.administrarVotaciones()
+					case 6:
+						c.administrarUsuarios()
+					case 7:
+						c.verLogs() // nueva función desde menú principal
+					case 8:
+						c.logoutUser()
+					case 9:
+						c.log.Println("Saliendo…")
+						return
+					}
+				case "admin":
+					// índices 5,6,7
+					switch choice {
+					case 5:
+						c.administrarVotaciones()
+					case 6:
+						c.logoutUser()
+					case 7:
+						c.log.Println("Saliendo…")
+						return
+					}
+				default: // user
+					// índices 5,6
+					switch choice {
+					case 5:
+						c.logoutUser()
+					case 6:
+						c.log.Println("Saliendo…")
+						return
+					}
 				}
-			case 6:
-				if c.userRole == "superadmin" {
-					c.administrarVotaciones()
-				} else {
-					c.logoutUser()
-
-				}
-			case 7:
-				if c.userRole == "superadmin" {
-					c.logoutUser()
-				} else {
-					c.log.Println("Saliendo del cliente...")
-					return
-				}
-			case 8:
-				// Opción Salir
-				c.log.Println("Saliendo del cliente...")
-				return
 			}
 		}
 
-		// Pausa para que el usuario vea resultados.
-		ui.Pause("Pulsa [Enter] para continuar...")
+		ui.Pause("Pulsa [Enter] para continuar…")
 	}
 }
 
@@ -411,7 +434,6 @@ func (c *client) administrarUsuarios() {
 		"Listar usuarios",
 		"Modificar usuario",
 		"Eliminar usuario",
-		"Ver logs del sistema", // Nueva opción para ver los logs
 		"Volver al menú principal",
 	}
 
@@ -457,9 +479,6 @@ func (c *client) administrarUsuarios() {
 		fmt.Println("Resultado:", res.Message)
 
 	case 4:
-		// Ver logs del sistema
-		c.verLogs()
-	case 5:
 		// Return to main menu
 		return
 	}
