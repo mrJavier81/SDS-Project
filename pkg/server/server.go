@@ -365,12 +365,11 @@ func (s *server) createPoll(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al crear la encuesta: %s", req.Question))
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
-
 	s.polls[pollID] = poll
 
 	pollData, err := poll.ToJSON()
 
-	s.log.Printf("Poll data: %s", pollData)
+	s.log.Printf("Encuesta creada con ID: %s", pollID)
 
 	s.db.Put("polls", []byte(pollID), []byte(pollData))
 
@@ -575,7 +574,7 @@ func (s *server) savePublicKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al guardar clave pública"}
 	}
 
-	s.log.Printf("Clave pública guardada: %s", req.Data)
+	s.log.Printf("Clave pública guardada exitosamente para el usuario: %s", req.Username)
 
 	return api.Response{Success: true, Message: "Clave pública guardada"}
 }
@@ -589,13 +588,10 @@ func (s *server) generateToken() string {
 		s.log.Println("Error generando token:", err)
 		return "" // En caso de error, devolvería un token vacío (puedes manejarlo mejor)
 	}
-
 	// Aplicar SHA-256
 	hash := sha256.Sum256(randomBytes)
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
-
-	s.log.Printf("Token generado: %s", token)
 
 	return token
 }
