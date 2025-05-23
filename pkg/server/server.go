@@ -29,6 +29,14 @@ import (
 	"prac/pkg/store"
 )
 
+// writerFunc es un tipo que implementa la interfaz io.Writer
+type writerFunc func(p []byte) (n int, err error)
+
+// Write implementa la interfaz io.Writer
+func (wf writerFunc) Write(p []byte) (n int, err error) {
+	return wf(p)
+}
+
 // server encapsula el estado de nuestro servidor
 type server struct {
 	db    store.Store      // base de datos
@@ -61,11 +69,24 @@ func Run() error {
 	if err != nil {
 		return fmt.Errorf("error abriendo base de datos: %v", err)
 	}
+	// Creamos un logger personalizado que también envía mensajes al servidor de backup
+	backupLogger := log.New(os.Stdout, "[srv] ", log.LstdFlags)
+	// Reemplazamos la función Write del logger para enviar mensajes al servidor de backup
+	originalWriter := backupLogger.Writer()
+	backupLogger.SetOutput(writerFunc(func(p []byte) (n int, err error) {
+		// Primero escribimos al output original
+		n, err = originalWriter.Write(p)
 
-	// Creamos nuestro servidor con su logger con prefijo 'srv'
+		// Luego enviamos al servidor de backup (sin bloquear si hay error)
+		go sendLogToBackupServer(string(p))
+
+		return n, err
+	}))
+
+	// Creamos nuestro servidor con el logger personalizado
 	srv := &server{
 		db:    db,
-		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
+		log:   backupLogger,
 		polls: make(map[string]*Poll),
 	}
 
@@ -92,10 +113,9 @@ func Run() error {
 	if err := srv.loadPolls(); err != nil {
 		return fmt.Errorf("error al cargar encuestas desde la base de datos: %v", err)
 	}
-
 	idActual, _ := db.Get("config", []byte("nextPollID"))
 
-	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
+	srv.log.Printf("nextPollID antes de inicializar: %s", idActual)
 
 	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
 	if idActual == nil || string(idActual) == "" {
@@ -108,7 +128,7 @@ func Run() error {
 
 	idActual, _ = db.Get("config", []byte("nextPollID"))
 
-	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
+	srv.log.Printf("nextPollID despues de inicializar: %s", idActual)
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
 	superadmins := []string{"Mirri", "Saulet", "Fabix"}
@@ -132,13 +152,12 @@ func Run() error {
 	// Construimos un mux y asociamos /api a nuestro apiHandler
 	mux := http.NewServeMux()
 	mux.Handle("/api", http.HandlerFunc(srv.apiHandler))
-
 	// Configuración de HTTPS
 	certFile := "cert.pem" // Ruta al certificado SSL
 	keyFile := "key.pem"   // Ruta a la clave privada
 
 	// Iniciamos el servidor HTTPS
-	fmt.Println("Servidor HTTPS iniciado en https://localhost:8443")
+	srv.log.Println("Servidor HTTPS iniciado en https://localhost:8443")
 	err = http.ListenAndServeTLS(":8443", certFile, keyFile, mux)
 	if err != nil {
 		return fmt.Errorf("error iniciando servidor HTTPS: %v", err)
@@ -259,8 +278,7 @@ func (s *server) initializeNextPollID() error {
 	// Intentar obtener el ID de la próxima encuesta desde la base de datos
 	data, err := s.db.Get("config", []byte("nextPollID"))
 	if err != nil {
-
-		fmt.Printf("Inicializando nextPollID: %s", data)
+		s.log.Printf("Inicializando nextPollID: %s", data)
 		// Si no existe la clave, inicializar el ID a 1
 		if strings.Contains(err.Error(), "clave no encontrada") {
 			s.nextPollID = 1
@@ -269,7 +287,7 @@ func (s *server) initializeNextPollID() error {
 		}
 		return fmt.Errorf("error al obtener nextPollID: %v", err)
 	}
-	fmt.Printf("NextpollID inicializado a %v", s.nextPollID)
+	s.log.Printf("NextpollID inicializado a %v", s.nextPollID)
 
 	// Convertir el valor recuperado a int64
 	nextPollID, err := strconv.ParseInt(string(data), 10, 64)
@@ -283,11 +301,10 @@ func (s *server) initializeNextPollID() error {
 }
 
 // Esta funcion se encarga de cargar el ID de la próxima encuesta desde la base de datos
-func (s *server) saveNextPollID() error {
-	// Convertimos el valor de nextPollID a string
+func (s *server) saveNextPollID() error { // Convertimos el valor de nextPollID a string
 	nextPollIDStr := strconv.FormatInt(s.nextPollID, 10)
 
-	fmt.Printf("Guardando nextPollID: %s", nextPollIDStr)
+	s.log.Printf("Guardando nextPollID: %s", nextPollIDStr)
 
 	// Guardamos el valor en la base de datos bajo el namespace "config" con la clave "nextPollID"
 	if err := s.db.Put("config", []byte("nextPollID"), []byte(nextPollIDStr)); err != nil {
@@ -327,11 +344,10 @@ func (s *server) createPoll(req api.Request) api.Response {
 	creador := req.Creador // Usuario que crea la encuesta
 
 	// Generar un ID único para la encuesta
-
 	pollID := strconv.FormatInt(s.nextPollID, 10)
 	s.nextPollID++ // Incrementar el ID para la próxima encuesta
 
-	fmt.Printf("nextPollID: %d\n", s.nextPollID)
+	s.log.Printf("nextPollID: %d", s.nextPollID)
 	// Guardar el nuevo ID de encuesta en la base de datos
 	if err := s.saveNextPollID(); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar el siguiente ID de encuesta"}
@@ -348,7 +364,7 @@ func (s *server) createPoll(req api.Request) api.Response {
 
 	pollData, err := poll.ToJSON()
 
-	fmt.Printf("Poll data: %s\n", pollData)
+	s.log.Printf("Poll data: %s", pollData)
 
 	s.db.Put("polls", []byte(pollID), []byte(pollData))
 
@@ -376,9 +392,8 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	pollList := "\n"
 	pollsListadas := 0
 	for _, poll := range s.polls {
-
 		if poll.ID == "__init__" {
-			fmt.Println("Poll ID es __init__, continuando...")
+			s.log.Println("Poll ID es __init__, continuando...")
 			continue
 		}
 
@@ -548,14 +563,13 @@ func (s *server) savePublicKey(req api.Request) api.Response {
 
 		return api.Response{Success: false, Message: "Faltan datos para guardar clave pública"}
 	}
-
-	fmt.Println("Guardando clave pública para el usuario:", req.Username)
+	s.log.Printf("Guardando clave pública para el usuario: %s", req.Username)
 	if err := s.db.Put("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
-		fmt.Print("Error al guardar clave pública database:", err, "\n")
+		s.log.Printf("Error al guardar clave pública database: %v", err)
 		return api.Response{Success: false, Message: "Error al guardar clave pública"}
 	}
 
-	fmt.Print("Clave pública guardada: ", req.Data, "\n")
+	s.log.Printf("Clave pública guardada: %s", req.Data)
 
 	return api.Response{Success: true, Message: "Clave pública guardada"}
 }
@@ -572,11 +586,10 @@ func (s *server) generateToken() string {
 
 	// Aplicar SHA-256
 	hash := sha256.Sum256(randomBytes)
-
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	print("Token generado: ", token, "\n")
+	s.log.Printf("Token generado: %s", token)
 
 	return token
 }
@@ -1016,6 +1029,11 @@ func decryptHTTPS(ciphertext, key []byte) ([]byte, error) {
 
 // sendLogToBackupServer envía un log al servidor de respaldo.
 func sendLogToBackupServer(logMessage string) {
+	// Evitamos enviar logs vacíos o muy largos
+	if len(logMessage) == 0 || len(logMessage) > 1000 {
+		return
+	}
+
 	conn, err := net.Dial("tcp", "localhost:9000") // Conectar al servidor de respaldo
 	if err != nil {
 		fmt.Println("Error al conectar con el servidor de respaldo:", err)
@@ -1023,7 +1041,12 @@ func sendLogToBackupServer(logMessage string) {
 	}
 	defer conn.Close()
 
-	_, err = conn.Write([]byte(logMessage + "\n"))
+	// Asegurar que termina con un salto de línea
+	if !strings.HasSuffix(logMessage, "\n") {
+		logMessage += "\n"
+	}
+
+	_, err = conn.Write([]byte(logMessage))
 	if err != nil {
 		fmt.Println("Error al enviar log al servidor de respaldo:", err)
 	}
@@ -1036,8 +1059,8 @@ func (s *server) logMessage(message string) {
 }
 
 func (s *server) fetchLogs(req api.Request) api.Response {
-	// Solo los superadministradores pueden ver los logs
-	if req.Role != "superadmin" {
+	// Solo los administradores y superadministradores pueden ver los logs
+	if req.Role != "superadmin" && req.Role != "admin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
 
@@ -1047,8 +1070,8 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al conectar con el servidor de respaldo: " + err.Error()}
 	}
 	defer conn.Close()
-
 	// Solicitar los logs al servidor de respaldo
+	s.log.Println("Solicitando logs al servidor de respaldo")
 	fmt.Fprintln(conn, "FETCH_LOGS")
 
 	// Leer la respuesta del servidor de respaldo

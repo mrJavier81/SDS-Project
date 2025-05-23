@@ -3,6 +3,7 @@ package backup
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"time"
@@ -11,7 +12,8 @@ import (
 )
 
 type BackupServer struct {
-	db store.Store
+	db  store.Store
+	log *log.Logger
 }
 
 func NewBackupServer(dbPath string) (*BackupServer, error) {
@@ -25,18 +27,18 @@ func NewBackupServer(dbPath string) (*BackupServer, error) {
 		return nil, fmt.Errorf("error al inicializar el bucket 'logs': %v", err)
 	}
 
-	return &BackupServer{db: db}, nil
+	return &BackupServer{db: db, log: log.New(os.Stdout, "[backup] ", log.LstdFlags)}, nil
 }
 
 func (bs *BackupServer) Start() {
 	listener, err := net.Listen("tcp", ":9000")
 	if err != nil {
-		fmt.Println("Error al iniciar el servidor de respaldo:", err)
+		bs.log.Printf("Error al iniciar el servidor de respaldo: %v", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Println("Servidor de respaldo escuchando en el puerto 9000...")
+	bs.log.Println("Servidor de respaldo escuchando en el puerto 9000...")
 	go bs.startPeriodicBackup()
 
 	for {
