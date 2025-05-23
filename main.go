@@ -33,18 +33,23 @@ func main() {
 	// los mensajes en la consola.
 	log := log.New(os.Stdout, "[main] ", log.LstdFlags)
 
-	// Solicitar contraseña para cifrado
-	fmt.Print("Introduce la contraseña para cifrado del servidor: ")
+	// Solicitar la contraseña maestra para cifrado y verificación
+	fmt.Println("=== Sistema de Contraseña Maestra ===")
+	fmt.Println("La contraseña maestra se utiliza para cifrar datos sensibles y logs.")
+	fmt.Println("Una vez establecida, no se puede cambiar. Debe tener al menos 8 caracteres.")
+	fmt.Print("Introduce la contraseña maestra: ")
 	reader := bufio.NewReader(os.Stdin)
 	masterPassword, err := reader.ReadString('\n')
 	if err != nil {
 		log.Fatalf("Error al leer la contraseña: %v", err)
 	}
 	masterPassword = strings.TrimSpace(masterPassword)
-	
+
 	if len(masterPassword) < 8 {
 		log.Fatalf("La contraseña debe tener al menos 8 caracteres")
 	}
+
+	fmt.Println("Verificando contraseña maestra...")
 
 	// Canal para sincronizar el inicio de los servidores
 	serverReady := make(chan bool, 2)

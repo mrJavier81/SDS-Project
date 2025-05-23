@@ -67,14 +67,25 @@ func initBucket(db store.Store, bucketName string) error {
 var encryptionKey []byte
 
 func Run(masterPassword string) error {
-	// Derivar clave para el cifrado usando Argon2
-	encryptionKey = deriveKey(masterPassword)
-
 	// Abrimos la base de datos usando el motor bbolt
 	db, err := store.NewStore("bbolt", "data/server.db")
 	if err != nil {
 		return fmt.Errorf("error abriendo base de datos: %v", err)
 	}
+
+	// Inicializamos el bucket para la verificación de contraseña
+	if err := initBucket(db, "passwd"); err != nil {
+		return fmt.Errorf("error inicializando bucket de contraseña: %v", err)
+	}
+
+	// Inicializar o verificar la contraseña maestra
+	if err := initializeMasterPassword(db, masterPassword); err != nil {
+		return fmt.Errorf("error con la contraseña maestra: %v", err)
+	}
+
+	// Derivar clave para el cifrado usando Argon2
+	encryptionKey = deriveKey(masterPassword)
+
 	// Creamos un logger personalizado que también envía mensajes al servidor de backup
 	backupLogger := log.New(os.Stdout, "[srv] ", log.LstdFlags)
 	// Reemplazamos la función Write del logger para enviar mensajes al servidor de backup
@@ -105,6 +116,7 @@ func Run(masterPassword string) error {
 		"messages",   // Mensajes entre usuarios
 		"polls",      // Encuestas (si las usas)
 		"pKeys",      // Claves públicas de usuarios
+		"passwd",     // Verificación de contraseña maestra
 	}
 
 	for _, bucket := range bucketsNecesarios {
@@ -550,7 +562,7 @@ func (s *server) getPublicKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
 	}
 
-	publicKey, err := s.db.Get("pKeys", []byte(req.Username))
+	publicKey, err := s.secureGet("pKeys", []byte(req.Username))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "clave no encontrada") {
@@ -569,7 +581,7 @@ func (s *server) savePublicKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Faltan datos para guardar clave pública"}
 	}
 	s.log.Printf("Guardando clave pública para el usuario: %s", req.Username)
-	if err := s.db.Put("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
+	if err := s.securePut("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
 		s.log.Printf("Error al guardar clave pública database: %v", err)
 		return api.Response{Success: false, Message: "Error al guardar clave pública"}
 	}
@@ -619,7 +631,7 @@ func (s *server) registerUser(req api.Request) api.Response {
 
 	// Determinar el rol del usuario
 	role := "user" // Por defecto, el rol es "user"
-	adminCheck, err := s.db.Get("superadmin", []byte(req.Username))
+	adminCheck, err := s.secureGet("superadmin", []byte(req.Username))
 	if err == nil && string(adminCheck) == "true" {
 		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
@@ -631,17 +643,17 @@ func (s *server) registerUser(req api.Request) api.Response {
 	}
 
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
+	if err := s.securePut("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
 	// Guardamos el rol del usuario en la base de datos
-	if err := s.db.Put("roles", []byte(req.Username), []byte(role)); err != nil {
+	if err := s.securePut("roles", []byte(req.Username), []byte(role)); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar rol del usuario"}
 	}
 
 	// Creamos una entrada vacía para los datos en 'userdata'
-	if err := s.db.Put("userdata", []byte(req.Username), []byte("")); err != nil {
+	if err := s.securePut("userdata", []byte(req.Username), []byte("")); err != nil {
 		return api.Response{Success: false, Message: "Error al inicializar datos de usuario"}
 	}
 
@@ -657,7 +669,7 @@ func (s *server) loginUser(req api.Request) api.Response {
 	}
 
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.secureGet("auth", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Usuario no encontrado"}
 	}
@@ -670,12 +682,12 @@ func (s *server) loginUser(req api.Request) api.Response {
 
 	// Generamos un nuevo token de sesión y lo guardamos
 	token := s.generateToken()
-	if err := s.db.Put("sessions", []byte(req.Username), []byte(token)); err != nil {
+	if err := s.securePut("sessions", []byte(req.Username), []byte(token)); err != nil {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
 	// Obtenemos el rol del usuario desde la base de datos
-	role, err := s.db.Get("roles", []byte(req.Username))
+	role, err := s.secureGet("roles", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener rol del usuario"}
 	}
@@ -697,9 +709,8 @@ func (s *server) fetchMessages(req api.Request) api.Response {
 	if !s.isTokenValid(req.Username, req.Token) {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
-
 	// Obtener los mensajes en formato JSON desde la base de datos
-	messagesJSON, err := s.db.Get("messages", []byte(req.Username))
+	messagesJSON, err := s.secureGet("messages", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener mensajes"}
 	}
@@ -719,7 +730,7 @@ func (s *server) fetchMessages(req api.Request) api.Response {
 
 func (s *server) storeMessage(username string, message string, sender string) api.Response {
 	// Obtener los mensajes existentes
-	messagesJSON, err := s.db.Get("messages", []byte(username))
+	messagesJSON, err := s.secureGet("messages", []byte(username))
 	if err != nil {
 		// Si no hay mensajes previos, inicializamos un slice vacío
 		if strings.Contains(err.Error(), "clave no encontrada") {
@@ -749,7 +760,7 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 	}
 
 	// Guardar los mensajes actualizados en la base de datos
-	if err := s.db.Put("messages", []byte(username), messagesJSON); err != nil {
+	if err := s.securePut("messages", []byte(username), messagesJSON); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar mensajes: " + err.Error()}
 	}
 
@@ -804,13 +815,10 @@ func (s *server) fetchData(req api.Request) api.Response {
 	}
 
 	// Obtenemos los datos asociados al usuario desde 'userdata'
-	rawData, err := s.db.Get("userdata", []byte(req.Username))
+	rawData, err := s.secureGet("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
-
-	// Derivamos la clave de cifrado a partir del nombre de usuario
-	key := deriveKey(req.Username)
 
 	if rawData == nil {
 		return api.Response{Success: false, Message: "No hay datos para el usuario"}
@@ -820,18 +828,10 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "No hay datos para el usuario"}
 	}
 
-	// Desciframos los datos antes de devolverlos
-	decryptedData, err := decryptHTTPS(rawData, key)
-	if err != nil {
-		fmt.Println("Error al descifrar datos:", err)
-		s.logMessage(fmt.Sprintf("Error al descifrar datos del usuario %s: %v", req.Username, err))
-		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
-	}
-
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    string(decryptedData),
+		Data:    string(rawData),
 	}
 }
 
@@ -846,18 +846,8 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Derivamos la clave de cifrado a partir del nombre de usuario
-	key := deriveKey(req.Username)
-
-	// Ciframos los datos del usuario antes de guardarlos
-	encryptedData, err := encryptHTTPS([]byte(req.Data), key)
-	if err != nil {
-		s.logMessage(fmt.Sprintf("Error al cifrar datos del usuario %s: %v", req.Username, err))
-		return api.Response{Success: false, Message: "Error al cifrar datos del usuario"}
-	}
-
 	// Guardamos los datos cifrados en la base de datos
-	if err := s.db.Put("userdata", []byte(req.Username), encryptedData); err != nil {
+	if err := s.securePut("userdata", []byte(req.Username), []byte(req.Data)); err != nil {
 		s.logMessage(fmt.Sprintf("Error al actualizar datos del usuario %s: %v", req.Username, err))
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
@@ -889,7 +879,7 @@ func (s *server) logoutUser(req api.Request) api.Response {
 // userExists comprueba si existe un usuario con la clave 'username'
 // en 'auth'. Si no se encuentra, retorna false.
 func (s *server) userExists(username string) (bool, error) {
-	_, err := s.db.Get("auth", []byte(username))
+	_, err := s.secureGet("auth", []byte(username))
 	if err != nil {
 		// Si no existe namespace o la clave:
 		if strings.Contains(err.Error(), "bucket no encontrado: auth") {
@@ -906,7 +896,7 @@ func (s *server) userExists(username string) (bool, error) {
 // isTokenValid comprueba que el token almacenado en 'sessions'
 // coincida con el token proporcionado.
 func (s *server) isTokenValid(username, token string) bool {
-	storedToken, err := s.db.Get("sessions", []byte(username))
+	storedToken, err := s.secureGet("sessions", []byte(username))
 	if err != nil {
 		return false
 	}
@@ -1190,4 +1180,167 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 		Message: "Logs obtenidos correctamente",
 		Data:    strings.Join(logs, "\n"),
 	}
+}
+
+// Constantes para la verificación de contraseña
+const (
+	verificationString   = "comprobacion_ok"
+	verificationSaltKey  = "salt"
+	verificationValueKey = "verification"
+)
+
+// initializeMasterPassword establece la contraseña maestra por primera vez o verifica su validez
+func initializeMasterPassword(db store.Store, masterPassword string) error {
+	// Comprobar si ya existe una contraseña configurada
+	salt, err := db.Get("passwd", []byte(verificationSaltKey))
+	if err == nil && len(salt) > 0 {
+		// La contraseña ya está configurada, verificar que sea correcta
+		return verifyMasterPassword(db, masterPassword)
+	}
+
+	// Primera vez que se establece la contraseña
+	// Generar un salt aleatorio
+	salt = make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return fmt.Errorf("error al generar salt: %v", err)
+	}
+
+	// Derivar clave de la contraseña con el salt
+	key := argon2.IDKey([]byte(masterPassword), salt, 1, 64*1024, 4, 32)
+
+	// Cifrar la cadena de verificación con la clave derivada
+	encryptedVerification, err := encryptWithKey([]byte(verificationString), key)
+	if err != nil {
+		return fmt.Errorf("error al cifrar verificación: %v", err)
+	}
+
+	// Guardar el salt y la verificación en la base de datos
+	if err := db.Put("passwd", []byte(verificationSaltKey), salt); err != nil {
+		return fmt.Errorf("error al guardar salt: %v", err)
+	}
+
+	if err := db.Put("passwd", []byte(verificationValueKey), encryptedVerification); err != nil {
+		return fmt.Errorf("error al guardar verificación: %v", err)
+	}
+
+	return nil
+}
+
+// verifyMasterPassword verifica que la contraseña maestra proporcionada sea correcta
+func verifyMasterPassword(db store.Store, masterPassword string) error {
+	// Obtener el salt almacenado
+	salt, err := db.Get("passwd", []byte(verificationSaltKey))
+	if err != nil {
+		return fmt.Errorf("error al recuperar salt: %v", err)
+	}
+
+	// Obtener el valor de verificación cifrado
+	encryptedVerification, err := db.Get("passwd", []byte(verificationValueKey))
+	if err != nil {
+		return fmt.Errorf("error al recuperar verificación: %v", err)
+	}
+
+	// Derivar clave con la contraseña proporcionada y el salt almacenado
+	key := argon2.IDKey([]byte(masterPassword), salt, 1, 64*1024, 4, 32)
+
+	// Intentar descifrar el valor de verificación
+	decryptedBytes, err := decryptWithKey(encryptedVerification, key)
+	if err != nil {
+		return fmt.Errorf("contraseña incorrecta")
+	}
+
+	// Verificar que el contenido descifrado coincide con la cadena esperada
+	if string(decryptedBytes) != verificationString {
+		return fmt.Errorf("contraseña incorrecta")
+	}
+
+	return nil
+}
+
+// encryptDatabaseValue cifra un valor antes de guardarlo en la base de datos
+func (s *server) encryptDatabaseValue(value []byte) ([]byte, error) {
+	// Solo cifrar si la clave de cifrado está disponible
+	if encryptionKey == nil {
+		return value, nil
+	}
+
+	return encryptWithKey(value, encryptionKey)
+}
+
+// decryptDatabaseValue descifra un valor recuperado de la base de datos
+func (s *server) decryptDatabaseValue(value []byte) ([]byte, error) {
+	// Solo descifrar si la clave de cifrado está disponible
+	if encryptionKey == nil {
+		return value, nil
+	}
+
+	// Si el valor es muy corto, probablemente no esté cifrado
+	if len(value) < 16 {
+		return value, nil
+	}
+
+	// Intentar descifrar el valor
+	decrypted, err := decryptWithKey(value, encryptionKey)
+	if err != nil {
+		// Si hay un error, puede que el valor no esté cifrado
+		return value, nil
+	}
+
+	return decrypted, nil
+}
+
+// securePut cifra los datos antes de guardarlos en la base de datos
+func (s *server) securePut(bucket string, key, value []byte) error {
+	// Determinar si este bucket contiene datos sensibles
+	sensitive := isSensitiveBucket(bucket)
+
+	if sensitive {
+		// Cifrar los datos si es un bucket sensible
+		encryptedValue, err := s.encryptDatabaseValue(value)
+		if err != nil {
+			return fmt.Errorf("error al cifrar datos para %s: %v", bucket, err)
+		}
+		return s.db.Put(bucket, key, encryptedValue)
+	}
+
+	// Si no es sensible, guardar sin cifrar
+	return s.db.Put(bucket, key, value)
+}
+
+// secureGet descifra los datos después de recuperarlos de la base de datos
+func (s *server) secureGet(bucket string, key []byte) ([]byte, error) {
+	// Obtener el valor de la base de datos
+	value, err := s.db.Get(bucket, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determinar si este bucket contiene datos sensibles
+	sensitive := isSensitiveBucket(bucket)
+
+	if sensitive {
+		// Descifrar los datos si es un bucket sensible
+		decryptedValue, err := s.decryptDatabaseValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("error al descifrar datos para %s: %v", bucket, err)
+		}
+		return decryptedValue, nil
+	}
+
+	// Si no es sensible, devolver sin descifrar
+	return value, nil
+}
+
+// isSensitiveBucket determina si un bucket contiene datos sensibles que deben ser cifrados
+func isSensitiveBucket(bucket string) bool {
+	sensitiveBuckets := map[string]bool{
+		"auth":     true, // Contraseñas de usuarios (ya hasheadas)
+		"userdata": true, // Datos de usuario
+		"messages": true, // Mensajes entre usuarios
+		"polls":    true, // Datos de encuestas
+		"pKeys":    true, // Claves públicas
+		"sessions": true, // Tokens de sesión
+	}
+
+	return sensitiveBuckets[bucket]
 }
