@@ -454,7 +454,7 @@ func (s *server) vote(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al guardar la encuesta actualizada"}
 	}
 
-	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s por %s", req.PollID, req.Username))
+	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s", req.PollID))
 	return api.Response{Success: true, Message: "Voto registrado"}
 }
 
@@ -1129,7 +1129,7 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al conectar con el servidor de respaldo: " + err.Error()}
 	}
 	defer conn.Close()
-	
+
 	// Solicitar los logs al servidor de respaldo
 	fmt.Fprintln(conn, "FETCH_LOGS")
 
@@ -1138,18 +1138,18 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 	var logs []string
 	for scanner.Scan() {
 		logLine := scanner.Text()
-		
+
 		// Buscar el patrón "timestamp: data" o "timestamp: ENCRYPTED:base64data"
 		parts := strings.SplitN(logLine, ": ", 2)
 		if len(parts) == 2 {
 			timestamp := parts[0]
 			logData := parts[1]
-			
+
 			// Verificar si el log está cifrado con prefijo
 			if strings.HasPrefix(logData, "ENCRYPTED:") {
 				// Quitar el prefijo ENCRYPTED:
 				encryptedBase64 := strings.TrimPrefix(logData, "ENCRYPTED:")
-				
+
 				// Decodificar base64 y descifrar
 				encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
 				if err == nil && encryptionKey != nil {
