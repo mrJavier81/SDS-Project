@@ -739,8 +739,8 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 
 	// Agregar el nuevo mensaje con el remitente
 	newMessage := map[string]string{
-		"sender":  sender,
-		"message": message,
+		"Sender":  sender,  // Cambiado a mayúsculas
+		"Message": message, // Cambiado a mayúsculas
 	}
 	messages = append(messages, newMessage)
 

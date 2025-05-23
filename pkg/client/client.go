@@ -566,6 +566,17 @@ func (c *client) registerUser() {
 
 		if res.Success {
 			fmt.Println("Clave pública guardada con éxito.")
+			res = c.sendRequest(api.Request{
+				Action:   api.ActionLogin,
+				Username: username,
+				Password: kKey,
+			})
+			if res.Success {
+				c.currentUser = username
+				c.authToken = res.Token
+				c.userRole = res.Data
+				fmt.Println("Inicio de sesión automático exitoso.")
+			}
 		} else {
 			fmt.Println("Error al guardar la clave pública:", res.Message)
 		}
@@ -634,6 +645,7 @@ func (c *client) loginUser() {
 			}
 
 			c.privateKey = privateKey
+
 			fmt.Println("Clave privada cargada con éxito.")
 		} else {
 			fmt.Println("Error al recuperar clave privada:", res.Message)
@@ -676,7 +688,7 @@ func (c *client) loginUser() {
 				}
 
 				// Descifrar el mensaje con la clave privada del cliente
-				decryptedMessage, err := decryptMessageWithPrivateKey(c.privateKey, encryptedMessage)
+				decryptedMessage, err := decryptMessageWithPrivateKey(c, encryptedMessage)
 				if err != nil {
 					fmt.Println("Error al descifrar el mensaje:", err)
 					continue
@@ -794,6 +806,7 @@ func (c *client) logoutUser() {
 	fmt.Println("** Cerrar sesión **")
 
 	if c.currentUser == "" || c.authToken == "" {
+		print(c.currentUser, " ", c.authToken)
 		fmt.Println("No estás logueado.")
 		return
 	}
@@ -1129,8 +1142,18 @@ func encryptMessageWithPublicKey(publicKey *rsa.PublicKey, message string) ([]by
 	return encryptedMessage, nil
 }
 
-func decryptMessageWithPrivateKey(privateKey *rsa.PrivateKey, encryptedMessage []byte) (string, error) {
-	decryptedMessage, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedMessage, nil)
+func decryptMessageWithPrivateKey(c *client, encryptedMessage []byte) (string, error) {
+	decryptedMessage, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, c.privateKey, encryptedMessage, nil)
+
+	fmt.Printf("Privada N: %x\n", c.privateKey.PublicKey.N)
+	res := c.sendRequest(api.Request{
+		Action:   api.ActionGetPublicKey,
+		Username: c.currentUser,
+		Token:    c.authToken,
+	})
+	pKey, _ := stringToRSAPublicKey(res.Data)
+	fmt.Printf("Publica N: %x\n", pKey.N)
+
 	if err != nil {
 		return "", fmt.Errorf("error al descifrar el mensaje: %v", err)
 	}
