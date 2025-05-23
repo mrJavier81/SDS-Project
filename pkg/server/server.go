@@ -39,11 +39,11 @@ func (wf writerFunc) Write(p []byte) (n int, err error) {
 
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db    store.Store      // base de datos
-	log   *log.Logger      // logger para mensajes de error e información
-	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
-	//tokenCounter int64       // contador para generar tokens
-	nextPollID int64 // ID para la próxima encuesta
+	db             store.Store                    // base de datos
+	log            *log.Logger                    // logger para mensajes de error e información
+	polls          map[string]*Poll               // polls es un mapa que contiene las encuestas activas
+	failedAttempts map[string]*FailedLoginAttempt // Registro de intentos fallidos de inicio de sesión
+	nextPollID     int64                          // ID para la próxima encuesta
 }
 
 // initBucket intenta inicializar un bucket realizando una operación simple
@@ -99,12 +99,12 @@ func Run(masterPassword string) error {
 
 		return n, err
 	}))
-
 	// Creamos nuestro servidor con el logger personalizado
 	srv := &server{
-		db:    db,
-		log:   backupLogger,
-		polls: make(map[string]*Poll),
+		db:             db,
+		log:            backupLogger,
+		polls:          make(map[string]*Poll),
+		failedAttempts: make(map[string]*FailedLoginAttempt),
 	}
 
 	// Inicializamos todos los buckets necesarios
@@ -608,6 +608,31 @@ func (s *server) generateToken() string {
 	return token
 }
 
+// generateSessionToken crea un token con fecha de expiración
+func (s *server) generateSessionToken() *SessionInfo {
+	// Generar 32 bytes aleatorios
+	randomBytes := make([]byte, 32)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		s.log.Println("Error generando token:", err)
+		return nil
+	}
+
+	// Aplicar SHA-256
+	hash := sha256.Sum256(randomBytes)
+	// Convertir el hash en string hexadecimal
+	token := hex.EncodeToString(hash[:])
+
+	// Crear información de sesión con expiración a 24 horas
+	session := &SessionInfo{
+		Token:      token,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		LastAccess: time.Now(),
+	}
+
+	return session
+}
+
 // registerUser registra un nuevo usuario, si no existe.
 // - Guardamos la contraseña en el namespace 'auth'
 // - Creamos entrada vacía en 'userdata' para el usuario
@@ -668,21 +693,52 @@ func (s *server) loginUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
+	// Comprobar si la cuenta está bloqueada por demasiados intentos fallidos
+	if attempt, exists := s.failedAttempts[req.Username]; exists && attempt.IsLocked() {
+		remainingTime := attempt.LockUntil.Sub(time.Now())
+		minutes := int(remainingTime.Minutes()) + 1 // Redondear hacia arriba
+		s.logMessage(fmt.Sprintf("Intento de inicio de sesión rechazado: cuenta bloqueada para %s", req.Username))
+		return api.Response{
+			Success: false,
+			Message: fmt.Sprintf("Cuenta bloqueada. Intente nuevamente en %d minutos", minutes),
+		}
+	}
+
 	// Recogemos la contraseña hasheada guardada en 'auth'
 	hashedPassword, err := s.secureGet("auth", []byte(req.Username))
 	if err != nil {
-		return api.Response{Success: false, Message: "Usuario no encontrado"}
+		// Registramos un intento fallido incluso si el usuario no existe
+		// para prevenir enumeración de usuarios
+		s.registerFailedAttempt(req.Username)
+		return api.Response{Success: false, Message: "Usuario o contraseña incorrectos"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
 	if !verifyPassword(string(hashedPassword), req.Password) {
 		s.logMessage(fmt.Sprintf("Intento de inicio de sesión fallido: credenciales inválidas para %s", req.Username))
-		return api.Response{Success: false, Message: "Credenciales inválidas"}
+		s.registerFailedAttempt(req.Username)
+		return api.Response{Success: false, Message: "Usuario o contraseña incorrectos"}
 	}
 
-	// Generamos un nuevo token de sesión y lo guardamos
-	token := s.generateToken()
-	if err := s.securePut("sessions", []byte(req.Username), []byte(token)); err != nil {
+	// Si llegamos aquí, el login es exitoso
+	// Reseteamos los intentos fallidos
+	s.resetFailedAttempts(req.Username)
+
+	// Generamos un nuevo token de sesión con tiempo de expiración
+	sessionInfo := s.generateSessionToken()
+	if sessionInfo == nil {
+		return api.Response{Success: false, Message: "Error al generar token de sesión"}
+	}
+
+	// Serializamos la información de sesión a JSON
+	sessionData, err := sessionInfo.ToJSON()
+	if err != nil {
+		s.logMessage(fmt.Sprintf("Error al serializar información de sesión: %v", err))
+		return api.Response{Success: false, Message: "Error al crear sesión"}
+	}
+
+	// Guardamos la información de sesión en la base de datos
+	if err := s.securePut("sessions", []byte(req.Username), sessionData); err != nil {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
@@ -696,7 +752,7 @@ func (s *server) loginUser(req api.Request) api.Response {
 	return api.Response{
 		Success: true,
 		Message: "Login exitoso",
-		Token:   token,
+		Token:   sessionInfo.Token,
 		Data:    string(role), // Incluimos el rol en el campo Data
 	}
 }
@@ -894,13 +950,53 @@ func (s *server) userExists(username string) (bool, error) {
 }
 
 // isTokenValid comprueba que el token almacenado en 'sessions'
-// coincida con el token proporcionado.
+// coincida con el token proporcionado y que no haya expirado.
 func (s *server) isTokenValid(username, token string) bool {
-	storedToken, err := s.secureGet("sessions", []byte(username))
+	storedTokenData, err := s.secureGet("sessions", []byte(username))
 	if err != nil {
 		return false
 	}
-	return string(storedToken) == token
+
+	// Si el token está almacenado en el formato antiguo (solo string)
+	if len(storedTokenData) < 10 || !strings.Contains(string(storedTokenData), "token") {
+		// Formato antiguo: solo comparamos el token
+		return string(storedTokenData) == token
+	}
+
+	// Parsear la información de sesión almacenada
+	var session SessionInfo
+	if err := session.FromJSON(storedTokenData); err != nil {
+		s.log.Printf("Error al deserializar información de sesión: %v", err)
+		return false
+	}
+
+	// Verificar si el token coincide
+	if session.Token != token {
+		return false
+	}
+
+	// Verificar si el token ha expirado
+	if session.IsExpired() {
+		s.log.Printf("Token expirado para el usuario %s", username)
+		// Eliminar el token expirado de la base de datos
+		_ = s.db.Delete("sessions", []byte(username))
+		return false
+	}
+
+	// Actualizar el último acceso
+	session.UpdateLastAccess()
+
+	// Guardar la información actualizada de sesión
+	updatedData, err := session.ToJSON()
+	if err != nil {
+		s.log.Printf("Error al serializar información de sesión: %v", err)
+		// No retornamos false aquí porque el token es válido
+	} else {
+		// Intentamos actualizar la sesión, pero no fallamos si no se puede
+		_ = s.securePut("sessions", []byte(username), updatedData)
+	}
+
+	return true
 }
 
 func verifyPassword(hashedPassword, password string) bool {
@@ -1343,4 +1439,35 @@ func isSensitiveBucket(bucket string) bool {
 	}
 
 	return sensitiveBuckets[bucket]
+}
+
+// registerFailedAttempt registra un intento fallido de inicio de sesión
+func (s *server) registerFailedAttempt(username string) {
+	// Inicializar el contador si no existe
+	if s.failedAttempts == nil {
+		s.failedAttempts = make(map[string]*FailedLoginAttempt)
+	}
+
+	if _, exists := s.failedAttempts[username]; !exists {
+		s.failedAttempts[username] = &FailedLoginAttempt{}
+	}
+
+	// Registrar el intento fallido
+	s.failedAttempts[username].RegisterAttempt()
+
+	if s.failedAttempts[username].IsLocked() {
+		s.logMessage(fmt.Sprintf("Cuenta bloqueada para el usuario %s por demasiados intentos fallidos", username))
+	}
+}
+
+// resetFailedAttempts resetea el contador de intentos fallidos
+func (s *server) resetFailedAttempts(username string) {
+	if s.failedAttempts == nil {
+		s.failedAttempts = make(map[string]*FailedLoginAttempt)
+		return
+	}
+
+	if attempt, exists := s.failedAttempts[username]; exists {
+		attempt.Reset()
+	}
 }
