@@ -63,7 +63,13 @@ func initBucket(db store.Store, bucketName string) error {
 }
 
 // Run inicia la base de datos y arranca el servidor HTTPS.
-func Run() error {
+// Variable global para almacenar la clave de cifrado
+var encryptionKey []byte
+
+func Run(masterPassword string) error {
+	// Derivar clave para el cifrado usando Argon2
+	encryptionKey = deriveKey(masterPassword)
+
 	// Abrimos la base de datos usando el motor bbolt
 	db, err := store.NewStore("bbolt", "data/server.db")
 	if err != nil {
@@ -1027,6 +1033,48 @@ func decryptHTTPS(ciphertext, key []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// encryptWithKey cifra los datos utilizando AES-GCM y devuelve el ciphertext con el nonce adjunto.
+func encryptWithKey(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	ciphertext := aesGCM.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// decryptWithKey descifra los datos utilizando AES-GCM, asumiendo que el nonce está adjunto.
+func decryptWithKey(encryptedData, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(encryptedData) < nonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := encryptedData[:nonceSize], encryptedData[nonceSize:]
+	return aesGCM.Open(nil, nonce, ciphertext, nil)
+}
+
 // sendLogToBackupServer envía un log al servidor de respaldo.
 func sendLogToBackupServer(logMessage string) {
 	// Evitamos enviar logs vacíos o muy largos
@@ -1034,22 +1082,34 @@ func sendLogToBackupServer(logMessage string) {
 		return
 	}
 
+	// Preparar mensaje para enviar
+	var messageToSend string
+	// Cifrar el mensaje de log si la clave está disponible
+	if encryptionKey != nil {
+		encryptedLog, err := encryptWithKey([]byte(logMessage), encryptionKey)
+		if err != nil {
+			return // Silenciosamente fallamos si hay error de cifrado
+		}
+		// Codificar en base64 para asegurar la transmisión correcta
+		encodedMessage := base64.StdEncoding.EncodeToString(encryptedLog)
+		// Añadir prefijo para indicar que es un mensaje cifrado
+		messageToSend = "ENCRYPTED:" + encodedMessage
+	} else {
+		messageToSend = logMessage
+	}
+
 	conn, err := net.Dial("tcp", "localhost:9000") // Conectar al servidor de respaldo
 	if err != nil {
-		fmt.Println("Error al conectar con el servidor de respaldo:", err)
-		return
+		return // Silenciosamente fallamos si hay error de conexión
 	}
 	defer conn.Close()
-
 	// Asegurar que termina con un salto de línea
-	if !strings.HasSuffix(logMessage, "\n") {
-		logMessage += "\n"
+	if !strings.HasSuffix(messageToSend, "\n") {
+		messageToSend += "\n"
 	}
 
-	_, err = conn.Write([]byte(logMessage))
-	if err != nil {
-		fmt.Println("Error al enviar log al servidor de respaldo:", err)
-	}
+	// Enviar sin reportar errores
+	_, _ = conn.Write([]byte(messageToSend))
 }
 
 // Modificar el logger para enviar logs al servidor de respaldo.
@@ -1063,22 +1123,66 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 	if req.Role != "superadmin" && req.Role != "admin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
-
 	// Conectar al servidor de respaldo para obtener los logs
 	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al conectar con el servidor de respaldo: " + err.Error()}
 	}
 	defer conn.Close()
+	
 	// Solicitar los logs al servidor de respaldo
-	s.log.Println("Solicitando logs al servidor de respaldo")
 	fmt.Fprintln(conn, "FETCH_LOGS")
 
 	// Leer la respuesta del servidor de respaldo
 	scanner := bufio.NewScanner(conn)
 	var logs []string
 	for scanner.Scan() {
-		logs = append(logs, scanner.Text())
+		logLine := scanner.Text()
+		
+		// Buscar el patrón "timestamp: data" o "timestamp: ENCRYPTED:base64data"
+		parts := strings.SplitN(logLine, ": ", 2)
+		if len(parts) == 2 {
+			timestamp := parts[0]
+			logData := parts[1]
+			
+			// Verificar si el log está cifrado con prefijo
+			if strings.HasPrefix(logData, "ENCRYPTED:") {
+				// Quitar el prefijo ENCRYPTED:
+				encryptedBase64 := strings.TrimPrefix(logData, "ENCRYPTED:")
+				
+				// Decodificar base64 y descifrar
+				encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+				if err == nil && encryptionKey != nil {
+					decryptedData, err := decryptWithKey(encryptedData, encryptionKey)
+					if err == nil {
+						// Agregar el log descifrado
+						logs = append(logs, fmt.Sprintf("%s: %s", timestamp, string(decryptedData)))
+						continue
+					}
+				}
+				// Si falló el descifrado, mostrar un mensaje genérico
+				logs = append(logs, fmt.Sprintf("%s: [Contenido cifrado]", timestamp))
+			} else {
+				// Intentar decodificar como base64 y descifrar de todas formas
+				// (El log podría estar cifrado pero guardado sin el prefijo)
+				if encryptionKey != nil && !strings.Contains(logData, " ") {
+					encryptedData, err := base64.StdEncoding.DecodeString(logData)
+					if err == nil && len(encryptedData) > 16 {
+						decryptedData, err := decryptWithKey(encryptedData, encryptionKey)
+						if err == nil {
+							// Si el descifrado tiene éxito, agregar el log descifrado
+							logs = append(logs, fmt.Sprintf("%s: %s", timestamp, string(decryptedData)))
+							continue
+						}
+					}
+				}
+				// Si no pudo ser descifrado, agregarlo tal cual
+				logs = append(logs, logLine)
+			}
+		} else {
+			// Si el formato no es el esperado, agregar la línea completa
+			logs = append(logs, logLine)
+		}
 	}
 
 	if len(logs) == 0 {

@@ -12,9 +12,14 @@ estudiantes: 	**entregar**
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 
 	"prac/pkg/backup"
 	"prac/pkg/client"
@@ -28,18 +33,32 @@ func main() {
 	// los mensajes en la consola.
 	log := log.New(os.Stdout, "[main] ", log.LstdFlags)
 
+	// Solicitar contraseña para cifrado
+	fmt.Print("Introduce la contraseña para cifrado del servidor: ")
+	reader := bufio.NewReader(os.Stdin)
+	masterPassword, err := reader.ReadString('\n')
+	if err != nil {
+		log.Fatalf("Error al leer la contraseña: %v", err)
+	}
+	masterPassword = strings.TrimSpace(masterPassword)
+	
+	if len(masterPassword) < 8 {
+		log.Fatalf("La contraseña debe tener al menos 8 caracteres")
+	}
+
 	// Canal para sincronizar el inicio de los servidores
 	serverReady := make(chan bool, 2)
-
 	// Inicia servidor en goroutine.
 	log.Println("Iniciando servidor...")
 	go func() {
 		// Esperar a que termine la barra de progreso
 		<-serverReady
-		if err := server.Run(); err != nil {
+		if err := server.Run(masterPassword); err != nil {
 			log.Fatalf("Error del servidor: %v\n", err)
 		}
 	}()
+	// Generar clave de cifrado derivada de la contraseña
+	encryptionKey := argon2.IDKey([]byte(masterPassword), []byte("backupSalt"), 1, 64*1024, 4, 32)
 
 	// Iniciar servidor de respaldo en una goroutine
 	go func() {
@@ -49,6 +68,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error al iniciar el servidor de respaldo: %v\n", err)
 		}
+		// Pasar la clave de cifrado al servidor de respaldo
+		backupServer.SetEncryptionKey(encryptionKey)
 		backupServer.Start()
 	}()
 
