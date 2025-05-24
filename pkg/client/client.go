@@ -65,7 +65,6 @@ func (c *client) runLoop() {
 		}
 
 		var options []string
-
 		if c.currentUser == "" {
 			// no autenticado
 			options = []string{
@@ -82,6 +81,7 @@ func (c *client) runLoop() {
 					"Ver datos",
 					"Actualizar datos",
 					"Enviar mensaje",
+					"Ver mensajes",
 					"Administrar votaciones",
 					"Administrar usuarios",
 					"Ver logs del sistema",
@@ -94,6 +94,7 @@ func (c *client) runLoop() {
 					"Ver datos",
 					"Actualizar datos",
 					"Enviar mensaje",
+					"Ver mensajes",
 					"Administrar votaciones",
 					"Cerrar sesión",
 					"Salir",
@@ -104,12 +105,12 @@ func (c *client) runLoop() {
 					"Ver datos",
 					"Actualizar datos",
 					"Enviar mensaje",
+					"Ver mensajes",
 					"Cerrar sesión",
 					"Salir",
 				}
 			}
 		}
-
 		choice := ui.PrintMenu(title, options)
 
 		// DESPACHAMOS según el rol y la elección
@@ -140,41 +141,44 @@ func (c *client) runLoop() {
 			case idx + 4:
 				c.sendMessage()
 				idx++
+			case idx + 5:
+				c.verMensajes()
+				idx++
 			default:
 				// los siguientes dependen del rol
 				switch c.userRole {
 				case "superadmin":
-					// índices 5,6,7,8,9
+					// índices 6,7,8,9,10
 					switch choice {
-					case 5:
-						c.administrarVotaciones()
 					case 6:
-						c.administrarUsuarios()
+						c.administrarVotaciones()
 					case 7:
-						c.verLogs() // nueva función desde menú principal
+						c.administrarUsuarios()
 					case 8:
-						c.logoutUser()
+						c.verLogs() // nueva función desde menú principal
 					case 9:
+						c.logoutUser()
+					case 10:
 						c.log.Println("Saliendo…")
 						return
 					}
 				case "admin":
-					// índices 5,6,7
+					// índices 6,7,8
 					switch choice {
-					case 5:
-						c.administrarVotaciones()
 					case 6:
-						c.logoutUser()
+						c.administrarVotaciones()
 					case 7:
+						c.logoutUser()
+					case 8:
 						c.log.Println("Saliendo…")
 						return
 					}
 				default: // user
-					// índices 5,6
+					// índices 6,7
 					switch choice {
-					case 5:
-						c.logoutUser()
 					case 6:
+						c.logoutUser()
+					case 7:
 						c.log.Println("Saliendo…")
 						return
 					}
@@ -526,29 +530,24 @@ func (c *client) registerUser() {
 		Action:   api.ActionRegister,
 		Username: username,
 		Password: kKey,
-	})
-
-	// Mostrar resultado
-	fmt.Println("Éxito:", res.Success)
-	fmt.Println("Mensaje:", res.Message)
-
-	// Si fue exitoso, guardar la clave privada cifrada en el servidor o localmente
-	// Almacenar clave privada cifrada y clave pública
+	}) // Mostrar solo el resultado esencial
 	if res.Success {
+		fmt.Println("Usuario registrado exitosamente.")
+
+		// Generar e inicializar claves de cifrado
 		privateKey, err := generateRSAKeyPair()
 		if err != nil {
-			fmt.Println("Error al generar clave:", err)
+			fmt.Println("Error durante la configuración inicial.")
 			return
 		}
 
 		privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-
 		c.currentUser = username
 
-		// Cifrado binario real
+		// Cifrar y guardar clave privada
 		nonce, encryptedPrivateKey, err := encryptData(c, privateKeyBytes)
 		if err != nil {
-			fmt.Println("Error al cifrar clave privada:", err)
+			fmt.Println("Error durante la configuración inicial.")
 			return
 		}
 
@@ -562,16 +561,15 @@ func (c *client) registerUser() {
 			Data:     encodedData,
 		})
 
-		if res.Success {
-			fmt.Println("Clave privada guardada con éxito.")
-		} else {
-			fmt.Println("Error al guardar la clave privada:", res.Message)
+		if !res.Success {
+			fmt.Println("Error durante la configuración inicial.")
+			return
 		}
 
 		// Serializar y enviar clave pública
 		publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 		if err != nil {
-			fmt.Println("Error al serializar la clave pública:", err)
+			fmt.Println("Error durante la configuración inicial.")
 			return
 		}
 
@@ -584,7 +582,7 @@ func (c *client) registerUser() {
 		})
 
 		if res.Success {
-			fmt.Println("Clave pública guardada con éxito.")
+			// Iniciar sesión automáticamente tras el registro exitoso
 			res = c.sendRequest(api.Request{
 				Action:   api.ActionLogin,
 				Username: username,
@@ -594,11 +592,13 @@ func (c *client) registerUser() {
 				c.currentUser = username
 				c.authToken = res.Token
 				c.userRole = res.Data
-				fmt.Println("Inicio de sesión automático exitoso.")
+				fmt.Println("Configuración completada. Sesión iniciada.")
 			}
 		} else {
-			fmt.Println("Error al guardar la clave pública:", res.Message)
+			fmt.Println("Error durante la configuración inicial.")
 		}
+	} else {
+		fmt.Println("Error:", res.Message)
 	}
 }
 
@@ -664,57 +664,10 @@ func (c *client) loginUser() {
 			}
 
 			c.privateKey = privateKey
-
-			fmt.Println("Clave privada cargada con éxito.")
 		} else {
 			fmt.Println("Error al recuperar clave privada:", res.Message)
 		}
-
-		// Recuperar mensajes del servidor
-		res = c.sendRequest(api.Request{
-			Action:   api.ActionFetchMessages,
-			Username: c.currentUser,
-			Token:    c.authToken,
-		})
-
-		if res.Success {
-			fmt.Println("Mensajes recibidos:")
-
-			// Supongamos que los mensajes vienen en formato JSON con los campos "Sender" y "Message"
-			var messages []struct {
-				Sender  string `json:"Sender"`  // Clave pública del remitente (hexadecimal)
-				Message string `json:"Message"` // Mensaje cifrado (hexadecimal)
-			}
-
-			// Decodificar los mensajes recibidos
-			err := json.Unmarshal([]byte(res.Data), &messages)
-			if err != nil {
-				fmt.Println("Error al procesar los mensajes:", err)
-				return
-			}
-
-			// Procesar y descifrar cada mensaje
-			for _, msg := range messages {
-				fmt.Printf("\nMensaje recibido de: %s\n", msg.Sender)
-				encryptedMessage, err := hex.DecodeString(msg.Message)
-				if err != nil {
-					fmt.Println("Error al decodificar el mensaje cifrado:", err)
-					continue
-				}
-
-				// Descifrar el mensaje con la clave privada del cliente
-				decryptedMessage, err := decryptMessageWithPrivateKey(c, encryptedMessage)
-				if err != nil {
-					fmt.Println("Error al descifrar el mensaje:", err)
-					continue
-				}
-
-				// Mostrar el mensaje descifrado
-				fmt.Printf("Mensaje descifrado: %s\n", decryptedMessage)
-			}
-		} else {
-			fmt.Println("Error al recuperar mensajes:", res.Message)
-		}
+		// Login exitoso - los mensajes se pueden ver desde el menú
 	} else {
 		fmt.Println("Error al iniciar sesión:", res.Message)
 	}
@@ -893,8 +846,8 @@ func (c *client) sendRequest(req api.Request) api.Response {
 }
 
 func (c *client) sendMessage() {
+	ui.ClearScreen()
 	fmt.Println("** Enviar mensaje **")
-	print(c.currentUser, " ", c.authToken)
 	if c.currentUser == "" || c.authToken == "" {
 		fmt.Println("No estás logueado. Inicia sesión primero.")
 		return
@@ -1054,7 +1007,7 @@ func decryptData(c *client, nonce, cipherText []byte) ([]byte, error) {
 func generatePrivateKeyFromPassword(c *client) ed25519.PrivateKey {
 	seed, err := scrypt.Key([]byte(c.kData), []byte(c.currentUser), 32768, 8, 1, 32)
 	if err != nil {
-		fmt.Errorf("Error al derivar la semilla: %v", err)
+		log.Fatal("Error al derivar la semilla:", err)
 	}
 
 	// Generamos la clave privada mediante el algoritmo ed25519 a partir de la semilla generada
@@ -1185,4 +1138,63 @@ func stringToRSAPublicKey(hexString string) (*rsa.PublicKey, error) {
 	}
 
 	return rsaPublicKey, nil
+}
+
+// verMensajes fetches and displays messages for the current user
+func (c *client) verMensajes() {
+	ui.ClearScreen()
+	fmt.Println("** Ver mensajes **")
+
+	if c.currentUser == "" || c.authToken == "" {
+		fmt.Println("No estás logueado. Inicia sesión primero.")
+		return
+	}
+
+	// Request messages from server
+	res := c.sendRequest(api.Request{
+		Action:   api.ActionFetchMessages,
+		Username: c.currentUser,
+		Token:    c.authToken,
+	})
+
+	if res.Success {
+		if res.Data == "" || res.Data == "[]" {
+			fmt.Println("No tienes mensajes.")
+		} else {
+			fmt.Println("Tus mensajes:")
+			// Parse JSON messages
+			var messages []map[string]string
+			if err := json.Unmarshal([]byte(res.Data), &messages); err != nil {
+				fmt.Println("Error al parsear mensajes:", err)
+				return
+			}
+
+			for i, message := range messages {
+				sender := message["Sender"]
+				encryptedMessage := message["Message"]
+
+				if encryptedMessage == "" {
+					continue
+				}
+
+				// Decode hex string
+				payload, err := hex.DecodeString(encryptedMessage)
+				if err != nil {
+					fmt.Printf("Error al decodificar mensaje %d: %v\n", i+1, err)
+					continue
+				}
+
+				// Decrypt with private key
+				decryptedMessage, err := decryptMessageWithPrivateKey(c, payload)
+				if err != nil {
+					fmt.Printf("Error al descifrar mensaje %d: %v\n", i+1, err)
+					continue
+				}
+
+				fmt.Printf("Mensaje %d (de %s): %s\n", i+1, sender, decryptedMessage)
+			}
+		}
+	} else {
+		fmt.Println("Error al obtener mensajes:", res.Message)
+	}
 }
