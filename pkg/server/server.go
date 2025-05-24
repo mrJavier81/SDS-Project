@@ -536,7 +536,7 @@ func (s *server) getPublicKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
 	}
 
-	publicKey, err := s.db.Get("pKeys", []byte(req.Username))
+	publicKey, err := s.db.Get("pKeys", []byte(req.Dest))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "clave no encontrada") {

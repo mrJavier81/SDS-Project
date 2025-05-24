@@ -679,8 +679,6 @@ func (c *client) loginUser() {
 			// Procesar y descifrar cada mensaje
 			for _, msg := range messages {
 				fmt.Printf("\nMensaje recibido de: %s\n", msg.Sender)
-
-				// Decodificar el mensaje cifrado de hexadecimal a bytes
 				encryptedMessage, err := hex.DecodeString(msg.Message)
 				if err != nil {
 					fmt.Println("Error al decodificar el mensaje cifrado:", err)
@@ -938,7 +936,6 @@ func (c *client) sendMessage() {
 		return
 	}
 
-	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
 	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
 
 	// Enviar el mensaje cifrado al servidor
@@ -1144,12 +1141,13 @@ func encryptMessageWithPublicKey(publicKey *rsa.PublicKey, message string) ([]by
 
 func decryptMessageWithPrivateKey(c *client, encryptedMessage []byte) (string, error) {
 	decryptedMessage, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, c.privateKey, encryptedMessage, nil)
-
+	print("Tamaño mensaje cifrado:", len(encryptedMessage))
 	fmt.Printf("Privada N: %x\n", c.privateKey.PublicKey.N)
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionGetPublicKey,
 		Username: c.currentUser,
 		Token:    c.authToken,
+		Dest:     c.currentUser,
 	})
 	pKey, _ := stringToRSAPublicKey(res.Data)
 	fmt.Printf("Publica N: %x\n", pKey.N)
