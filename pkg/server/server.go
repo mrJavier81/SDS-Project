@@ -29,13 +29,21 @@ import (
 	"prac/pkg/store"
 )
 
+// writerFunc es un tipo que implementa la interfaz io.Writer
+type writerFunc func(p []byte) (n int, err error)
+
+// Write implementa la interfaz io.Writer
+func (wf writerFunc) Write(p []byte) (n int, err error) {
+	return wf(p)
+}
+
 // server encapsula el estado de nuestro servidor
 type server struct {
-	db    store.Store      // base de datos
-	log   *log.Logger      // logger para mensajes de error e información
-	polls map[string]*Poll // polls es un mapa que contiene las encuestas activas
-	//tokenCounter int64       // contador para generar tokens
-	nextPollID int64 // ID para la próxima encuesta
+	db             store.Store                    // base de datos
+	log            *log.Logger                    // logger para mensajes de error e información
+	polls          map[string]*Poll               // polls es un mapa que contiene las encuestas activas
+	failedAttempts map[string]*FailedLoginAttempt // Registro de intentos fallidos de inicio de sesión
+	nextPollID     int64                          // ID para la próxima encuesta
 }
 
 // initBucket intenta inicializar un bucket realizando una operación simple
@@ -55,18 +63,48 @@ func initBucket(db store.Store, bucketName string) error {
 }
 
 // Run inicia la base de datos y arranca el servidor HTTPS.
-func Run() error {
+// Variable global para almacenar la clave de cifrado
+var encryptionKey []byte
+
+func Run(masterPassword string) error {
 	// Abrimos la base de datos usando el motor bbolt
 	db, err := store.NewStore("bbolt", "data/server.db")
 	if err != nil {
 		return fmt.Errorf("error abriendo base de datos: %v", err)
 	}
 
-	// Creamos nuestro servidor con su logger con prefijo 'srv'
+	// Inicializamos el bucket para la verificación de contraseña
+	if err := initBucket(db, "passwd"); err != nil {
+		return fmt.Errorf("error inicializando bucket de contraseña: %v", err)
+	}
+
+	// Inicializar o verificar la contraseña maestra
+	if err := initializeMasterPassword(db, masterPassword); err != nil {
+		return fmt.Errorf("error con la contraseña maestra: %v", err)
+	}
+
+	// Derivar clave para el cifrado usando Argon2
+	encryptionKey = deriveKey(masterPassword)
+
+	// Creamos un logger personalizado que también envía mensajes al servidor de backup
+	backupLogger := log.New(os.Stdout, "[srv] ", log.LstdFlags)
+	// Reemplazamos la función Write del logger para enviar mensajes al servidor de backup
+	originalWriter := backupLogger.Writer()
+	backupLogger.SetOutput(writerFunc(func(p []byte) (n int, err error) {
+		// Primero escribimos al output original
+		n, err = originalWriter.Write(p)
+
+		// Luego enviamos al servidor de backup (sin bloquear si hay error)
+		go sendLogToBackupServer(string(p))
+
+		return n, err
+	}))
+	// Creamos nuestro servidor con el logger personalizado
 	srv := &server{
-		db:    db,
-		log:   log.New(os.Stdout, "[srv] ", log.LstdFlags),
-		polls: make(map[string]*Poll),
+		db:             db,
+		log:            backupLogger,
+		polls:          make(map[string]*Poll),
+		failedAttempts: make(map[string]*FailedLoginAttempt),
 	}
 
 	// Inicializamos todos los buckets necesarios
@@ -78,6 +116,7 @@ func Run() error {
 		"messages",   // Mensajes entre usuarios
 		"polls",      // Encuestas (si las usas)
 		"pKeys",      // Claves públicas de usuarios
+		"passwd",     // Verificación de contraseña maestra
 	}
 
 	for _, bucket := range bucketsNecesarios {
@@ -92,10 +131,9 @@ func Run() error {
 	if err := srv.loadPolls(); err != nil {
 		return fmt.Errorf("error al cargar encuestas desde la base de datos: %v", err)
 	}
-
 	idActual, _ := db.Get("config", []byte("nextPollID"))
 
-	fmt.Printf("nextPollID antes de inicializar: %s", idActual)
+	srv.log.Printf("nextPollID antes de inicializar: %s", idActual)
 
 	// Inicializamos la nextPollID a 1 si no existe, si existe no se cambia nada (se supone)
 	if idActual == nil || string(idActual) == "" {
@@ -108,7 +146,7 @@ func Run() error {
 
 	idActual, _ = db.Get("config", []byte("nextPollID"))
 
-	fmt.Printf("nextPollID despues de inicializar: %s", idActual)
+	srv.log.Printf("nextPollID despues de inicializar: %s", idActual)
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
 	superadmins := []string{"Mirri", "Saulet", "Fabix"}
@@ -132,13 +170,12 @@ func Run() error {
 	// Construimos un mux y asociamos /api a nuestro apiHandler
 	mux := http.NewServeMux()
 	mux.Handle("/api", http.HandlerFunc(srv.apiHandler))
-
 	// Configuración de HTTPS
 	certFile := "cert.pem" // Ruta al certificado SSL
 	keyFile := "key.pem"   // Ruta a la clave privada
 
 	// Iniciamos el servidor HTTPS
-	fmt.Println("Servidor HTTPS iniciado en https://localhost:8443")
+	srv.log.Println("Servidor HTTPS iniciado en https://localhost:8443")
 	err = http.ListenAndServeTLS(":8443", certFile, keyFile, mux)
 	if err != nil {
 		return fmt.Errorf("error iniciando servidor HTTPS: %v", err)
@@ -206,6 +243,12 @@ func (s *server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case api.ActionSavePublicKey:
 		res = s.savePublicKey(req)
 
+	case api.ActionSavePrivateKey:
+		res = s.savePrivateKey(req)
+
+	case api.ActionFetchPrivateKey:
+		res = s.fetchPrivateKey(req)
+
 	default:
 		res = api.Response{Success: false, Message: "Acción desconocida"}
 	}
@@ -259,8 +302,7 @@ func (s *server) initializeNextPollID() error {
 	// Intentar obtener el ID de la próxima encuesta desde la base de datos
 	data, err := s.db.Get("config", []byte("nextPollID"))
 	if err != nil {
-
-		fmt.Printf("Inicializando nextPollID: %s", data)
+		s.log.Printf("Inicializando nextPollID: %s", data)
 		// Si no existe la clave, inicializar el ID a 1
 		if strings.Contains(err.Error(), "clave no encontrada") {
 			s.nextPollID = 1
@@ -269,7 +311,7 @@ func (s *server) initializeNextPollID() error {
 		}
 		return fmt.Errorf("error al obtener nextPollID: %v", err)
 	}
-	fmt.Printf("NextpollID inicializado a %v", s.nextPollID)
+	s.log.Printf("NextpollID inicializado a %v", s.nextPollID)
 
 	// Convertir el valor recuperado a int64
 	nextPollID, err := strconv.ParseInt(string(data), 10, 64)
@@ -283,11 +325,10 @@ func (s *server) initializeNextPollID() error {
 }
 
 // Esta funcion se encarga de cargar el ID de la próxima encuesta desde la base de datos
-func (s *server) saveNextPollID() error {
-	// Convertimos el valor de nextPollID a string
+func (s *server) saveNextPollID() error { // Convertimos el valor de nextPollID a string
 	nextPollIDStr := strconv.FormatInt(s.nextPollID, 10)
 
-	fmt.Printf("Guardando nextPollID: %s", nextPollIDStr)
+	s.log.Printf("Guardando nextPollID: %s", nextPollIDStr)
 
 	// Guardamos el valor en la base de datos bajo el namespace "config" con la clave "nextPollID"
 	if err := s.db.Put("config", []byte("nextPollID"), []byte(nextPollIDStr)); err != nil {
@@ -327,11 +368,10 @@ func (s *server) createPoll(req api.Request) api.Response {
 	creador := req.Creador // Usuario que crea la encuesta
 
 	// Generar un ID único para la encuesta
-
 	pollID := strconv.FormatInt(s.nextPollID, 10)
 	s.nextPollID++ // Incrementar el ID para la próxima encuesta
 
-	fmt.Printf("nextPollID: %d\n", s.nextPollID)
+	s.log.Printf("nextPollID: %d", s.nextPollID)
 	// Guardar el nuevo ID de encuesta en la base de datos
 	if err := s.saveNextPollID(); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar el siguiente ID de encuesta"}
@@ -343,12 +383,11 @@ func (s *server) createPoll(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al crear la encuesta: %s", req.Question))
 		return api.Response{Success: false, Message: "Error al crear la encuesta"}
 	}
-
 	s.polls[pollID] = poll
 
 	pollData, err := poll.ToJSON()
 
-	fmt.Printf("Poll data: %s\n", pollData)
+	s.log.Printf("Encuesta creada con ID: %s", pollID)
 
 	s.db.Put("polls", []byte(pollID), []byte(pollData))
 
@@ -376,9 +415,8 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	pollList := "\n"
 	pollsListadas := 0
 	for _, poll := range s.polls {
-
 		if poll.ID == "__init__" {
-			fmt.Println("Poll ID es __init__, continuando...")
+			s.log.Println("Poll ID es __init__, continuando...")
 			continue
 		}
 
@@ -433,7 +471,7 @@ func (s *server) vote(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Error al guardar la encuesta actualizada"}
 	}
 
-	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s por %s", req.PollID, req.Username))
+	s.logMessage(fmt.Sprintf("Voto registrado en la encuesta %s", req.PollID))
 	return api.Response{Success: true, Message: "Voto registrado"}
 }
 
@@ -530,7 +568,7 @@ func (s *server) getPublicKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
 	}
 
-	publicKey, err := s.db.Get("pKeys", []byte(req.Username))
+	publicKey, err := s.secureGet("pKeys", []byte(req.Dest))
 
 	if err != nil {
 		if strings.Contains(err.Error(), "clave no encontrada") {
@@ -548,14 +586,13 @@ func (s *server) savePublicKey(req api.Request) api.Response {
 
 		return api.Response{Success: false, Message: "Faltan datos para guardar clave pública"}
 	}
-
-	fmt.Println("Guardando clave pública para el usuario:", req.Username)
-	if err := s.db.Put("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
-		fmt.Print("Error al guardar clave pública database:", err, "\n")
+	s.log.Printf("Guardando clave pública para el usuario: %s", req.Username)
+	if err := s.securePut("pKeys", []byte(req.Username), []byte(req.Data)); err != nil {
+		s.log.Printf("Error al guardar clave pública database: %v", err)
 		return api.Response{Success: false, Message: "Error al guardar clave pública"}
 	}
 
-	fmt.Print("Clave pública guardada: ", req.Data, "\n")
+	s.log.Printf("Clave pública guardada exitosamente para el usuario: %s", req.Username)
 
 	return api.Response{Success: true, Message: "Clave pública guardada"}
 }
@@ -569,16 +606,37 @@ func (s *server) generateToken() string {
 		s.log.Println("Error generando token:", err)
 		return "" // En caso de error, devolvería un token vacío (puedes manejarlo mejor)
 	}
-
 	// Aplicar SHA-256
 	hash := sha256.Sum256(randomBytes)
-
 	// Convertir el hash en string hexadecimal
 	token := hex.EncodeToString(hash[:])
 
-	print("Token generado: ", token, "\n")
-
 	return token
+}
+
+// generateSessionToken crea un token con fecha de expiración
+func (s *server) generateSessionToken() *SessionInfo {
+	// Generar 32 bytes aleatorios
+	randomBytes := make([]byte, 32)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		s.log.Println("Error generando token:", err)
+		return nil
+	}
+
+	// Aplicar SHA-256
+	hash := sha256.Sum256(randomBytes)
+	// Convertir el hash en string hexadecimal
+	token := hex.EncodeToString(hash[:])
+
+	// Crear información de sesión con expiración a 24 horas
+	session := &SessionInfo{
+		Token:      token,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		LastAccess: time.Now(),
+	}
+
+	return session
 }
 
 // registerUser registra un nuevo usuario, si no existe.
@@ -604,7 +662,7 @@ func (s *server) registerUser(req api.Request) api.Response {
 
 	// Determinar el rol del usuario
 	role := "user" // Por defecto, el rol es "user"
-	adminCheck, err := s.db.Get("superadmin", []byte(req.Username))
+	adminCheck, err := s.secureGet("superadmin", []byte(req.Username))
 	if err == nil && string(adminCheck) == "true" {
 		role = "superadmin" // Si el usuario está en la lista de admins, asignar el rol "admin"
 	}
@@ -616,17 +674,17 @@ func (s *server) registerUser(req api.Request) api.Response {
 	}
 
 	// Guardamos el usuario con su hash en la base de datos
-	if err := s.db.Put("auth", []byte(req.Username), hashedPassword); err != nil {
+	if err := s.securePut("auth", []byte(req.Username), hashedPassword); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar credenciales"}
 	}
 
 	// Guardamos el rol del usuario en la base de datos
-	if err := s.db.Put("roles", []byte(req.Username), []byte(role)); err != nil {
+	if err := s.securePut("roles", []byte(req.Username), []byte(role)); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar rol del usuario"}
 	}
 
 	// Creamos una entrada vacía para los datos en 'userdata'
-	if err := s.db.Put("userdata", []byte(req.Username), []byte("")); err != nil {
+	if err := s.securePut("userdata", []byte(req.Username), []byte("")); err != nil {
 		return api.Response{Success: false, Message: "Error al inicializar datos de usuario"}
 	}
 
@@ -641,26 +699,57 @@ func (s *server) loginUser(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Faltan credenciales"}
 	}
 
+	// Comprobar si la cuenta está bloqueada por demasiados intentos fallidos
+	if attempt, exists := s.failedAttempts[req.Username]; exists && attempt.IsLocked() {
+		remainingTime := attempt.LockUntil.Sub(time.Now())
+		minutes := int(remainingTime.Minutes()) + 1 // Redondear hacia arriba
+		s.logMessage(fmt.Sprintf("Intento de inicio de sesión rechazado: cuenta bloqueada para %s", req.Username))
+		return api.Response{
+			Success: false,
+			Message: fmt.Sprintf("Cuenta bloqueada. Intente nuevamente en %d minutos", minutes),
+		}
+	}
+
 	// Recogemos la contraseña hasheada guardada en 'auth'
-	hashedPassword, err := s.db.Get("auth", []byte(req.Username))
+	hashedPassword, err := s.secureGet("auth", []byte(req.Username))
 	if err != nil {
-		return api.Response{Success: false, Message: "Usuario no encontrado"}
+		// Registramos un intento fallido incluso si el usuario no existe
+		// para prevenir enumeración de usuarios
+		s.registerFailedAttempt(req.Username)
+		return api.Response{Success: false, Message: "Usuario o contraseña incorrectos"}
 	}
 
 	// Comparamos la contraseña ingresada con el hash almacenado
 	if !verifyPassword(string(hashedPassword), req.Password) {
 		s.logMessage(fmt.Sprintf("Intento de inicio de sesión fallido: credenciales inválidas para %s", req.Username))
-		return api.Response{Success: false, Message: "Credenciales inválidas"}
+		s.registerFailedAttempt(req.Username)
+		return api.Response{Success: false, Message: "Usuario o contraseña incorrectos"}
 	}
 
-	// Generamos un nuevo token de sesión y lo guardamos
-	token := s.generateToken()
-	if err := s.db.Put("sessions", []byte(req.Username), []byte(token)); err != nil {
+	// Si llegamos aquí, el login es exitoso
+	// Reseteamos los intentos fallidos
+	s.resetFailedAttempts(req.Username)
+
+	// Generamos un nuevo token de sesión con tiempo de expiración
+	sessionInfo := s.generateSessionToken()
+	if sessionInfo == nil {
+		return api.Response{Success: false, Message: "Error al generar token de sesión"}
+	}
+
+	// Serializamos la información de sesión a JSON
+	sessionData, err := sessionInfo.ToJSON()
+	if err != nil {
+		s.logMessage(fmt.Sprintf("Error al serializar información de sesión: %v", err))
+		return api.Response{Success: false, Message: "Error al crear sesión"}
+	}
+
+	// Guardamos la información de sesión en la base de datos
+	if err := s.securePut("sessions", []byte(req.Username), sessionData); err != nil {
 		return api.Response{Success: false, Message: "Error al crear sesión"}
 	}
 
 	// Obtenemos el rol del usuario desde la base de datos
-	role, err := s.db.Get("roles", []byte(req.Username))
+	role, err := s.secureGet("roles", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener rol del usuario"}
 	}
@@ -669,7 +758,7 @@ func (s *server) loginUser(req api.Request) api.Response {
 	return api.Response{
 		Success: true,
 		Message: "Login exitoso",
-		Token:   token,
+		Token:   sessionInfo.Token,
 		Data:    string(role), // Incluimos el rol en el campo Data
 	}
 }
@@ -682,29 +771,39 @@ func (s *server) fetchMessages(req api.Request) api.Response {
 	if !s.isTokenValid(req.Username, req.Token) {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
-
 	// Obtener los mensajes en formato JSON desde la base de datos
-	messagesJSON, err := s.db.Get("messages", []byte(req.Username))
+	messagesJSON, err := s.secureGet("messages", []byte(req.Username))
 	if err != nil {
-		return api.Response{Success: false, Message: "Error al obtener mensajes"}
+		// Si no hay mensajes, devolver lista vacía en formato JSON
+		return api.Response{
+			Success: true,
+			Message: "No hay mensajes",
+			Data:    "[]",
+		}
 	}
 
-	// Convertir el JSON a un slice de mapas
+	// Validar que el JSON sea decodificable
 	var messages []map[string]string
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
 		return api.Response{Success: false, Message: "Error al decodificar mensajes: " + err.Error()}
 	}
 
+	// Reconvertimos a JSON válido (opcional, pero más seguro)
+	data, err := json.Marshal(messages)
+	if err != nil {
+		return api.Response{Success: false, Message: "Error al reserializar mensajes"}
+	}
+
 	return api.Response{
-		Success:  true,
-		Message:  "Mensajes obtenidos",
-		Messages: messages, // Devolver los mensajes como están
+		Success: true,
+		Message: "Mensajes obtenidos",
+		Data:    string(data),
 	}
 }
 
 func (s *server) storeMessage(username string, message string, sender string) api.Response {
 	// Obtener los mensajes existentes
-	messagesJSON, err := s.db.Get("messages", []byte(username))
+	messagesJSON, err := s.secureGet("messages", []byte(username))
 	if err != nil {
 		// Si no hay mensajes previos, inicializamos un slice vacío
 		if strings.Contains(err.Error(), "clave no encontrada") {
@@ -722,8 +821,8 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 
 	// Agregar el nuevo mensaje con el remitente
 	newMessage := map[string]string{
-		"sender":  sender,
-		"message": message,
+		"Sender":  sender,  // Cambiado a mayúsculas
+		"Message": message, // Cambiado a mayúsculas
 	}
 	messages = append(messages, newMessage)
 
@@ -734,7 +833,7 @@ func (s *server) storeMessage(username string, message string, sender string) ap
 	}
 
 	// Guardar los mensajes actualizados en la base de datos
-	if err := s.db.Put("messages", []byte(username), messagesJSON); err != nil {
+	if err := s.securePut("messages", []byte(username), messagesJSON); err != nil {
 		return api.Response{Success: false, Message: "Error al guardar mensajes: " + err.Error()}
 	}
 
@@ -789,13 +888,10 @@ func (s *server) fetchData(req api.Request) api.Response {
 	}
 
 	// Obtenemos los datos asociados al usuario desde 'userdata'
-	rawData, err := s.db.Get("userdata", []byte(req.Username))
+	rawData, err := s.secureGet("userdata", []byte(req.Username))
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al obtener datos del usuario"}
 	}
-
-	// Derivamos la clave de cifrado a partir del nombre de usuario
-	key := deriveKey(req.Username)
 
 	if rawData == nil {
 		return api.Response{Success: false, Message: "No hay datos para el usuario"}
@@ -805,18 +901,10 @@ func (s *server) fetchData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "No hay datos para el usuario"}
 	}
 
-	// Desciframos los datos antes de devolverlos
-	decryptedData, err := decryptHTTPS(rawData, key)
-	if err != nil {
-		fmt.Println("Error al descifrar datos:", err)
-		s.logMessage(fmt.Sprintf("Error al descifrar datos del usuario %s: %v", req.Username, err))
-		return api.Response{Success: false, Message: "Error al descifrar datos del usuario"}
-	}
-
 	return api.Response{
 		Success: true,
 		Message: "Datos privados de " + req.Username,
-		Data:    string(decryptedData),
+		Data:    string(rawData),
 	}
 }
 
@@ -831,18 +919,8 @@ func (s *server) updateData(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Token inválido o sesión expirada"}
 	}
 
-	// Derivamos la clave de cifrado a partir del nombre de usuario
-	key := deriveKey(req.Username)
-
-	// Ciframos los datos del usuario antes de guardarlos
-	encryptedData, err := encryptHTTPS([]byte(req.Data), key)
-	if err != nil {
-		s.logMessage(fmt.Sprintf("Error al cifrar datos del usuario %s: %v", req.Username, err))
-		return api.Response{Success: false, Message: "Error al cifrar datos del usuario"}
-	}
-
 	// Guardamos los datos cifrados en la base de datos
-	if err := s.db.Put("userdata", []byte(req.Username), encryptedData); err != nil {
+	if err := s.securePut("userdata", []byte(req.Username), []byte(req.Data)); err != nil {
 		s.logMessage(fmt.Sprintf("Error al actualizar datos del usuario %s: %v", req.Username, err))
 		return api.Response{Success: false, Message: "Error al actualizar datos del usuario"}
 	}
@@ -874,7 +952,7 @@ func (s *server) logoutUser(req api.Request) api.Response {
 // userExists comprueba si existe un usuario con la clave 'username'
 // en 'auth'. Si no se encuentra, retorna false.
 func (s *server) userExists(username string) (bool, error) {
-	_, err := s.db.Get("auth", []byte(username))
+	_, err := s.secureGet("auth", []byte(username))
 	if err != nil {
 		// Si no existe namespace o la clave:
 		if strings.Contains(err.Error(), "bucket no encontrado: auth") {
@@ -889,13 +967,53 @@ func (s *server) userExists(username string) (bool, error) {
 }
 
 // isTokenValid comprueba que el token almacenado en 'sessions'
-// coincida con el token proporcionado.
+// coincida con el token proporcionado y que no haya expirado.
 func (s *server) isTokenValid(username, token string) bool {
-	storedToken, err := s.db.Get("sessions", []byte(username))
+	storedTokenData, err := s.secureGet("sessions", []byte(username))
 	if err != nil {
 		return false
 	}
-	return string(storedToken) == token
+
+	// Si el token está almacenado en el formato antiguo (solo string)
+	if len(storedTokenData) < 10 || !strings.Contains(string(storedTokenData), "token") {
+		// Formato antiguo: solo comparamos el token
+		return string(storedTokenData) == token
+	}
+
+	// Parsear la información de sesión almacenada
+	var session SessionInfo
+	if err := session.FromJSON(storedTokenData); err != nil {
+		s.log.Printf("Error al deserializar información de sesión: %v", err)
+		return false
+	}
+
+	// Verificar si el token coincide
+	if session.Token != token {
+		return false
+	}
+
+	// Verificar si el token ha expirado
+	if session.IsExpired() {
+		s.log.Printf("Token expirado para el usuario %s", username)
+		// Eliminar el token expirado de la base de datos
+		_ = s.db.Delete("sessions", []byte(username))
+		return false
+	}
+
+	// Actualizar el último acceso
+	session.UpdateLastAccess()
+
+	// Guardar la información actualizada de sesión
+	updatedData, err := session.ToJSON()
+	if err != nil {
+		s.log.Printf("Error al serializar información de sesión: %v", err)
+		// No retornamos false aquí porque el token es válido
+	} else {
+		// Intentamos actualizar la sesión, pero no fallamos si no se puede
+		_ = s.securePut("sessions", []byte(username), updatedData)
+	}
+
+	return true
 }
 
 func verifyPassword(hashedPassword, password string) bool {
@@ -1014,19 +1132,83 @@ func decryptHTTPS(ciphertext, key []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// encryptWithKey cifra los datos utilizando AES-GCM y devuelve el ciphertext con el nonce adjunto.
+func encryptWithKey(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, aesGCM.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	ciphertext := aesGCM.Seal(nonce, nonce, data, nil)
+	return ciphertext, nil
+}
+
+// decryptWithKey descifra los datos utilizando AES-GCM, asumiendo que el nonce está adjunto.
+func decryptWithKey(encryptedData, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := aesGCM.NonceSize()
+	if len(encryptedData) < nonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := encryptedData[:nonceSize], encryptedData[nonceSize:]
+	return aesGCM.Open(nil, nonce, ciphertext, nil)
+}
+
 // sendLogToBackupServer envía un log al servidor de respaldo.
 func sendLogToBackupServer(logMessage string) {
-	conn, err := net.Dial("tcp", "localhost:9000") // Conectar al servidor de respaldo
-	if err != nil {
-		fmt.Println("Error al conectar con el servidor de respaldo:", err)
+	// Evitamos enviar logs vacíos o muy largos
+	if len(logMessage) == 0 || len(logMessage) > 1000 {
 		return
 	}
-	defer conn.Close()
 
-	_, err = conn.Write([]byte(logMessage + "\n"))
-	if err != nil {
-		fmt.Println("Error al enviar log al servidor de respaldo:", err)
+	// Preparar mensaje para enviar
+	var messageToSend string
+	// Cifrar el mensaje de log si la clave está disponible
+	if encryptionKey != nil {
+		encryptedLog, err := encryptWithKey([]byte(logMessage), encryptionKey)
+		if err != nil {
+			return // Silenciosamente fallamos si hay error de cifrado
+		}
+		// Codificar en base64 para asegurar la transmisión correcta
+		encodedMessage := base64.StdEncoding.EncodeToString(encryptedLog)
+		// Añadir prefijo para indicar que es un mensaje cifrado
+		messageToSend = "ENCRYPTED:" + encodedMessage
+	} else {
+		messageToSend = logMessage
 	}
+
+	conn, err := net.Dial("tcp", "localhost:9000") // Conectar al servidor de respaldo
+	if err != nil {
+		return // Silenciosamente fallamos si hay error de conexión
+	}
+	defer conn.Close()
+	// Asegurar que termina con un salto de línea
+	if !strings.HasSuffix(messageToSend, "\n") {
+		messageToSend += "\n"
+	}
+
+	// Enviar sin reportar errores
+	_, _ = conn.Write([]byte(messageToSend))
 }
 
 // Modificar el logger para enviar logs al servidor de respaldo.
@@ -1036,11 +1218,10 @@ func (s *server) logMessage(message string) {
 }
 
 func (s *server) fetchLogs(req api.Request) api.Response {
-	// Solo los superadministradores pueden ver los logs
-	if req.Role != "superadmin" {
+	// Solo los administradores y superadministradores pueden ver los logs
+	if req.Role != "superadmin" && req.Role != "admin" {
 		return api.Response{Success: false, Message: "Acceso denegado"}
 	}
-
 	// Conectar al servidor de respaldo para obtener los logs
 	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
@@ -1055,7 +1236,52 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 	scanner := bufio.NewScanner(conn)
 	var logs []string
 	for scanner.Scan() {
-		logs = append(logs, scanner.Text())
+		logLine := scanner.Text()
+
+		// Buscar el patrón "timestamp: data" o "timestamp: ENCRYPTED:base64data"
+		parts := strings.SplitN(logLine, ": ", 2)
+		if len(parts) == 2 {
+			timestamp := parts[0]
+			logData := parts[1]
+
+			// Verificar si el log está cifrado con prefijo
+			if strings.HasPrefix(logData, "ENCRYPTED:") {
+				// Quitar el prefijo ENCRYPTED:
+				encryptedBase64 := strings.TrimPrefix(logData, "ENCRYPTED:")
+
+				// Decodificar base64 y descifrar
+				encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+				if err == nil && encryptionKey != nil {
+					decryptedData, err := decryptWithKey(encryptedData, encryptionKey)
+					if err == nil {
+						// Agregar el log descifrado
+						logs = append(logs, fmt.Sprintf("%s: %s", timestamp, string(decryptedData)))
+						continue
+					}
+				}
+				// Si falló el descifrado, mostrar un mensaje genérico
+				logs = append(logs, fmt.Sprintf("%s: [Contenido cifrado]", timestamp))
+			} else {
+				// Intentar decodificar como base64 y descifrar de todas formas
+				// (El log podría estar cifrado pero guardado sin el prefijo)
+				if encryptionKey != nil && !strings.Contains(logData, " ") {
+					encryptedData, err := base64.StdEncoding.DecodeString(logData)
+					if err == nil && len(encryptedData) > 16 {
+						decryptedData, err := decryptWithKey(encryptedData, encryptionKey)
+						if err == nil {
+							// Si el descifrado tiene éxito, agregar el log descifrado
+							logs = append(logs, fmt.Sprintf("%s: %s", timestamp, string(decryptedData)))
+							continue
+						}
+					}
+				}
+				// Si no pudo ser descifrado, agregarlo tal cual
+				logs = append(logs, logLine)
+			}
+		} else {
+			// Si el formato no es el esperado, agregar la línea completa
+			logs = append(logs, logLine)
+		}
 	}
 
 	if len(logs) == 0 {
@@ -1067,4 +1293,230 @@ func (s *server) fetchLogs(req api.Request) api.Response {
 		Message: "Logs obtenidos correctamente",
 		Data:    strings.Join(logs, "\n"),
 	}
+}
+
+// Constantes para la verificación de contraseña
+const (
+	verificationString   = "comprobacion_ok"
+	verificationSaltKey  = "salt"
+	verificationValueKey = "verification"
+)
+
+// initializeMasterPassword establece la contraseña maestra por primera vez o verifica su validez
+func initializeMasterPassword(db store.Store, masterPassword string) error {
+	// Comprobar si ya existe una contraseña configurada
+	salt, err := db.Get("passwd", []byte(verificationSaltKey))
+	if err == nil && len(salt) > 0 {
+		// La contraseña ya está configurada, verificar que sea correcta
+		return verifyMasterPassword(db, masterPassword)
+	}
+
+	// Primera vez que se establece la contraseña
+	// Generar un salt aleatorio
+	salt = make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return fmt.Errorf("error al generar salt: %v", err)
+	}
+
+	// Derivar clave de la contraseña con el salt
+	key := argon2.IDKey([]byte(masterPassword), salt, 1, 64*1024, 4, 32)
+
+	// Cifrar la cadena de verificación con la clave derivada
+	encryptedVerification, err := encryptWithKey([]byte(verificationString), key)
+	if err != nil {
+		return fmt.Errorf("error al cifrar verificación: %v", err)
+	}
+
+	// Guardar el salt y la verificación en la base de datos
+	if err := db.Put("passwd", []byte(verificationSaltKey), salt); err != nil {
+		return fmt.Errorf("error al guardar salt: %v", err)
+	}
+
+	if err := db.Put("passwd", []byte(verificationValueKey), encryptedVerification); err != nil {
+		return fmt.Errorf("error al guardar verificación: %v", err)
+	}
+
+	return nil
+}
+
+// verifyMasterPassword verifica que la contraseña maestra proporcionada sea correcta
+func verifyMasterPassword(db store.Store, masterPassword string) error {
+	// Obtener el salt almacenado
+	salt, err := db.Get("passwd", []byte(verificationSaltKey))
+	if err != nil {
+		return fmt.Errorf("error al recuperar salt: %v", err)
+	}
+
+	// Obtener el valor de verificación cifrado
+	encryptedVerification, err := db.Get("passwd", []byte(verificationValueKey))
+	if err != nil {
+		return fmt.Errorf("error al recuperar verificación: %v", err)
+	}
+
+	// Derivar clave con la contraseña proporcionada y el salt almacenado
+	key := argon2.IDKey([]byte(masterPassword), salt, 1, 64*1024, 4, 32)
+
+	// Intentar descifrar el valor de verificación
+	decryptedBytes, err := decryptWithKey(encryptedVerification, key)
+	if err != nil {
+		return fmt.Errorf("contraseña incorrecta")
+	}
+
+	// Verificar que el contenido descifrado coincide con la cadena esperada
+	if string(decryptedBytes) != verificationString {
+		return fmt.Errorf("contraseña incorrecta")
+	}
+
+	return nil
+}
+
+// encryptDatabaseValue cifra un valor antes de guardarlo en la base de datos
+func (s *server) encryptDatabaseValue(value []byte) ([]byte, error) {
+	// Solo cifrar si la clave de cifrado está disponible
+	if encryptionKey == nil {
+		return value, nil
+	}
+
+	return encryptWithKey(value, encryptionKey)
+}
+
+// decryptDatabaseValue descifra un valor recuperado de la base de datos
+func (s *server) decryptDatabaseValue(value []byte) ([]byte, error) {
+	// Solo descifrar si la clave de cifrado está disponible
+	if encryptionKey == nil {
+		return value, nil
+	}
+
+	// Si el valor es muy corto, probablemente no esté cifrado
+	if len(value) < 16 {
+		return value, nil
+	}
+
+	// Intentar descifrar el valor
+	decrypted, err := decryptWithKey(value, encryptionKey)
+	if err != nil {
+		// Si hay un error, puede que el valor no esté cifrado
+		return value, nil
+	}
+
+	return decrypted, nil
+}
+
+// securePut cifra los datos antes de guardarlos en la base de datos
+func (s *server) securePut(bucket string, key, value []byte) error {
+	// Determinar si este bucket contiene datos sensibles
+	sensitive := isSensitiveBucket(bucket)
+
+	if sensitive {
+		// Cifrar los datos si es un bucket sensible
+		encryptedValue, err := s.encryptDatabaseValue(value)
+		if err != nil {
+			return fmt.Errorf("error al cifrar datos para %s: %v", bucket, err)
+		}
+		return s.db.Put(bucket, key, encryptedValue)
+	}
+
+	// Si no es sensible, guardar sin cifrar
+	return s.db.Put(bucket, key, value)
+}
+
+// secureGet descifra los datos después de recuperarlos de la base de datos
+func (s *server) secureGet(bucket string, key []byte) ([]byte, error) {
+	// Obtener el valor de la base de datos
+	value, err := s.db.Get(bucket, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determinar si este bucket contiene datos sensibles
+	sensitive := isSensitiveBucket(bucket)
+
+	if sensitive {
+		// Descifrar los datos si es un bucket sensible
+		decryptedValue, err := s.decryptDatabaseValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("error al descifrar datos para %s: %v", bucket, err)
+		}
+		return decryptedValue, nil
+	}
+
+	// Si no es sensible, devolver sin descifrar
+	return value, nil
+}
+
+// isSensitiveBucket determina si un bucket contiene datos sensibles que deben ser cifrados
+func isSensitiveBucket(bucket string) bool {
+	sensitiveBuckets := map[string]bool{
+		"auth":     true, // Contraseñas de usuarios (ya hasheadas)
+		"userdata": true, // Datos de usuario
+		"messages": true, // Mensajes entre usuarios
+		"polls":    true, // Datos de encuestas
+		"pKeys":    true, // Claves públicas
+		"sessions": true, // Tokens de sesión
+	}
+
+	return sensitiveBuckets[bucket]
+}
+
+// registerFailedAttempt registra un intento fallido de inicio de sesión
+func (s *server) registerFailedAttempt(username string) {
+	// Inicializar el contador si no existe
+	if s.failedAttempts == nil {
+		s.failedAttempts = make(map[string]*FailedLoginAttempt)
+	}
+
+	if _, exists := s.failedAttempts[username]; !exists {
+		s.failedAttempts[username] = &FailedLoginAttempt{}
+	}
+
+	// Registrar el intento fallido
+	s.failedAttempts[username].RegisterAttempt()
+
+	if s.failedAttempts[username].IsLocked() {
+		s.logMessage(fmt.Sprintf("Cuenta bloqueada para el usuario %s por demasiados intentos fallidos", username))
+	}
+}
+
+// resetFailedAttempts resetea el contador de intentos fallidos
+func (s *server) resetFailedAttempts(username string) {
+	if s.failedAttempts == nil {
+		s.failedAttempts = make(map[string]*FailedLoginAttempt)
+		return
+	}
+
+	if attempt, exists := s.failedAttempts[username]; exists {
+		attempt.Reset()
+	}
+}
+
+func (s *server) savePrivateKey(req api.Request) api.Response {
+	// Guardar la clave privada del usuario
+	if req.Username == "" || req.Data == "" {
+		return api.Response{Success: false, Message: "Faltan datos para guardar clave privada"}
+	}
+
+	if err := s.db.Put("privateKeys", []byte(req.Username), []byte(req.Data)); err != nil {
+		fmt.Print("Error al guardar clave privada database:", err, "\n")
+		return api.Response{Success: false, Message: "Error al guardar clave privada"}
+	}
+
+	return api.Response{Success: true, Message: "Clave privada guardada"}
+}
+
+func (s *server) fetchPrivateKey(req api.Request) api.Response {
+	// Obtener la clave privada del usuario
+	if req.Username == "" {
+		return api.Response{Success: false, Message: "Falta el nombre de usuario"}
+	}
+
+	privateKey, err := s.db.Get("privateKeys", []byte(req.Username))
+
+	if err != nil {
+		if strings.Contains(err.Error(), "clave no encontrada") {
+			return api.Response{Success: false, Message: "Clave privada no encontrada"}
+		}
+		return api.Response{Success: false, Message: "Error al obtener clave privada"}
+	}
+
+	return api.Response{Success: true, Message: "Clave privada obtenida", Data: string(privateKey)}
 }
