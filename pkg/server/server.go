@@ -146,6 +146,8 @@ func Run(masterPassword string) error {
 
 	idActual, _ = db.Get("config", []byte("nextPollID"))
 
+	srv.nextPollID, _ = strconv.ParseInt(string(idActual), 10, 64)
+
 	srv.log.Printf("nextPollID despues de inicializar: %s", idActual)
 
 	// Inicializamos la lista de superadmins (esto es solo un ejemplo)
@@ -367,15 +369,20 @@ func (s *server) createPoll(req api.Request) api.Response {
 	}
 	creador := req.Creador // Usuario que crea la encuesta
 
+	for _, poll := range s.polls {
+		if strings.TrimSpace(strings.ToLower(poll.Question)) == strings.TrimSpace(strings.ToLower(req.Question)) {
+			return api.Response{Success: false, Message: "Ya existe una encuesta con esa pregunta"}
+		}
+	}
+
 	// Generar un ID único para la encuesta
 	pollID := strconv.FormatInt(s.nextPollID, 10)
 	s.nextPollID++ // Incrementar el ID para la próxima encuesta
 
 	s.log.Printf("nextPollID: %d", s.nextPollID)
 	// Guardar el nuevo ID de encuesta en la base de datos
-	if err := s.saveNextPollID(); err != nil {
-		return api.Response{Success: false, Message: "Error al guardar el siguiente ID de encuesta"}
-	}
+
+	s.db.Put("config", []byte("nextPollID"), []byte(strconv.FormatInt(s.nextPollID, 10)))
 
 	// Crear la encuesta
 	poll := NewPoll(pollID, req.Question, req.Options, duracionHoras, creador)
@@ -385,7 +392,7 @@ func (s *server) createPoll(req api.Request) api.Response {
 	}
 	s.polls[pollID] = poll
 
-	pollData, err := poll.ToJSON()
+	pollData, _ := poll.ToJSON()
 
 	s.log.Printf("Encuesta creada con ID: %s", pollID)
 
