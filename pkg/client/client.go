@@ -23,6 +23,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -38,7 +39,7 @@ type client struct {
 	authToken   string
 	userRole    string
 	kData       string
-	//privKey     ed25519.PrivateKey   //Descomentar si generar la clave cada vez es muy lento
+	privateKey  *rsa.PrivateKey //Descomentar si generar la clave cada vez es muy lento
 }
 
 // Run es la única función exportada de este paquete.
@@ -521,43 +522,83 @@ func (c *client) registerUser() {
 	// Guardamos kData para uso futuro
 	c.kData = kData
 
-	// Enviamos la acción al servidor
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionRegister,
 		Username: username,
-		Password: kKey, // Enviamos el hash determinista de la primera mitad
+		Password: kKey,
 	})
 
-	// Mostramos resultado
+	// Mostrar resultado
 	fmt.Println("Éxito:", res.Success)
 	fmt.Println("Mensaje:", res.Message)
 
-	// Si fue exitoso, probamos loguear automáticamente.
+	// Si fue exitoso, guardar la clave privada cifrada en el servidor o localmente
+	// Almacenar clave privada cifrada y clave pública
 	if res.Success {
-		c.log.Println("Registro exitoso; intentando login automático...")
-
-		loginRes := c.sendRequest(api.Request{
-			Action:   api.ActionLogin,
-			Username: username,
-			Password: kKey, // Enviamos el hash determinista de la primera mitad
-		})
-
-		// Log the response for debugging
-		c.log.Printf("Respuesta de login automático: %+v\n", loginRes)
-
-		if loginRes.Success {
-			c.currentUser = username
-			c.authToken = loginRes.Token
-			c.userRole = loginRes.Data
-			fmt.Printf("Login automático como %v exitoso. Token guardado.\n", c.userRole)
-
-			// Generar y enviar la clave pública al servidor
-			sendPublicKeyToServer(c)
-
-		} else {
-			fmt.Println("No se ha podido hacer login automático:", loginRes.Message)
+		privateKey, err := generateRSAKeyPair()
+		if err != nil {
+			fmt.Println("Error al generar clave:", err)
+			return
 		}
 
+		privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+
+		c.currentUser = username
+
+		// Cifrado binario real
+		nonce, encryptedPrivateKey, err := encryptData(c, privateKeyBytes)
+		if err != nil {
+			fmt.Println("Error al cifrar clave privada:", err)
+			return
+		}
+
+		finalPayload := append(nonce, encryptedPrivateKey...)
+		encodedData := hex.EncodeToString(finalPayload)
+
+		res = c.sendRequest(api.Request{
+			Action:   api.ActionSavePrivateKey,
+			Username: username,
+			Token:    c.authToken,
+			Data:     encodedData,
+		})
+
+		if res.Success {
+			fmt.Println("Clave privada guardada con éxito.")
+		} else {
+			fmt.Println("Error al guardar la clave privada:", res.Message)
+		}
+
+		// Serializar y enviar clave pública
+		publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+		if err != nil {
+			fmt.Println("Error al serializar la clave pública:", err)
+			return
+		}
+
+		publicKeyHex := hex.EncodeToString(publicKeyBytes)
+		res = c.sendRequest(api.Request{
+			Action:   api.ActionSavePublicKey,
+			Username: username,
+			Token:    c.authToken,
+			Data:     publicKeyHex,
+		})
+
+		if res.Success {
+			fmt.Println("Clave pública guardada con éxito.")
+			res = c.sendRequest(api.Request{
+				Action:   api.ActionLogin,
+				Username: username,
+				Password: kKey,
+			})
+			if res.Success {
+				c.currentUser = username
+				c.authToken = res.Token
+				c.userRole = res.Data
+				fmt.Println("Inicio de sesión automático exitoso.")
+			}
+		} else {
+			fmt.Println("Error al guardar la clave pública:", res.Message)
+		}
 	}
 }
 
@@ -575,101 +616,109 @@ func (c *client) loginUser() {
 	// Guardamos kData para uso futuro
 	c.kData = kData
 
-	// Enviamos la solicitud de inicio de sesión al servidor
+	// Enviar la solicitud de inicio de sesión al servidor
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionLogin,
 		Username: username,
 		Password: kKey,
 	})
 
-	// Mostramos el resultado de la solicitud
-	fmt.Println("Éxito:", res.Success)
-	fmt.Println("Mensaje:", res.Message)
-
-	// Si el inicio de sesión fue exitoso
 	if res.Success {
 		c.currentUser = username
 		c.authToken = res.Token
 		c.userRole = res.Data
-		fmt.Printf("Sesión iniciada como %v. Token guardado.\n", c.userRole)
 
-		//privateKey := generatePrivateKeyFromPassword(c)
-	}
+		// Recuperar la clave privada cifrada del servidor
+		// Recuperar clave privada cifrada
+		res := c.sendRequest(api.Request{
+			Action:   api.ActionFetchPrivateKey,
+			Username: username,
+			Token:    c.authToken,
+		})
 
-	res = c.sendRequest(api.Request{
-		Action:   api.ActionFetchMessages,
-		Username: c.currentUser,
-		Token:    c.authToken,
-	})
-	if res.Success {
-		fmt.Println("Mensajes recibidos:")
-
-		for _, message := range res.Messages {
-			// Decodificar el mensaje de hexadecimal a bytes
-
-			fmt.Println("Mensaje recibido:", message)
-			// Convertir el mensaje a json
-			messageData, err := hex.DecodeString(message["message"])
-
+		if res.Success {
+			encryptedPrivateKey, err := hex.DecodeString(res.Data)
 			if err != nil {
-				fmt.Println("Error al decodificar el mensaje:", err)
-				continue
+				fmt.Println("Error al decodificar la clave:", err)
+				return
+			}
+			if len(encryptedPrivateKey) < 12 {
+				fmt.Println("Error: datos inválidos, nonce insuficiente.")
+				return
 			}
 
-			fmt.Println("Mensaje decodificado:", string(messageData))
+			nonce := encryptedPrivateKey[:12]
+			cipherText := encryptedPrivateKey[12:]
 
-			encryptedMessage := messageData
+			// Descifrado binario real
+			decryptedBytes, err := decryptData(c, nonce, cipherText)
 			if err != nil {
-				fmt.Println("Error al decodificar el mensaje:", err)
-				continue
+				fmt.Println("Error al descifrar la clave privada:", err)
+				return
 			}
 
-			// Separar el nonce y el mensaje cifrado
-			if len(encryptedMessage) < 24 {
-				fmt.Println("Mensaje cifrado inválido: falta el nonce")
-				continue
-			}
-			var nonce [24]byte
-			copy(nonce[:], encryptedMessage[:24])
-			cipherText := encryptedMessage[24:]
-
-			res = c.sendRequest(api.Request{
-				Action:   api.ActionGetPublicKey,
-				Username: message["sender"],
-				Token:    c.authToken,
-			})
-
-			if !res.Success {
-				fmt.Println("Error al obtener la clave pública del remitente:", res.Message)
-				continue
-			}
-
-			publicKey, err := stringToPublicKey(res.Data)
+			privateKey, err := x509.ParsePKCS1PrivateKey(decryptedBytes)
 			if err != nil {
-				fmt.Println("Error al convertir la clave pública:", err)
-				continue
+				fmt.Println("Error al reconstruir la clave privada:", err)
+				return
 			}
 
-			fmt.Printf("Mensaje cifrado recibido: %x\n", cipherText)
+			c.privateKey = privateKey
 
-			fmt.Println("Clave pública del remitente:", publicKey)
-			// Descifrar el mensaje
-			_, privateKey := getKeyPairFromPassword(c)
-			decryptedMessage, ok := box.Open(nil, cipherText, &nonce, publicKey, privateKey)
+			fmt.Println("Clave privada cargada con éxito.")
+		} else {
+			fmt.Println("Error al recuperar clave privada:", res.Message)
+		}
 
-			if !ok {
-				fmt.Println("Error al descifrar el mensaje")
-				fmt.Printf("Clave publica: %v con len %d\n", publicKey, len(publicKey))
-				fmt.Printf("Clave privada: %v con len %d\n", privateKey, len(privateKey))
-				fmt.Printf("Nonce: %v con len %d\n", nonce, len(nonce))
-				continue
+		// Recuperar mensajes del servidor
+		res = c.sendRequest(api.Request{
+			Action:   api.ActionFetchMessages,
+			Username: c.currentUser,
+			Token:    c.authToken,
+		})
+
+		if res.Success {
+			fmt.Println("Mensajes recibidos:")
+
+			// Supongamos que los mensajes vienen en formato JSON con los campos "Sender" y "Message"
+			var messages []struct {
+				Sender  string `json:"Sender"`  // Clave pública del remitente (hexadecimal)
+				Message string `json:"Message"` // Mensaje cifrado (hexadecimal)
 			}
 
-			// Mostrar el mensaje descifrado
-			fmt.Println("Mensaje descifrado: Usuario " /*messageData["sender"],*/, string(decryptedMessage))
+			print("Mensajes en formato JSON:", res.Data)
+
+			// Decodificar los mensajes recibidos
+			err := json.Unmarshal([]byte(res.Data), &messages)
+			if err != nil {
+				fmt.Println("Error al procesar los mensajes:", err)
+				return
+			}
+
+			// Procesar y descifrar cada mensaje
+			for _, msg := range messages {
+				fmt.Printf("\nMensaje recibido de: %s\n", msg.Sender)
+				encryptedMessage, err := hex.DecodeString(msg.Message)
+				if err != nil {
+					fmt.Println("Error al decodificar el mensaje cifrado:", err)
+					continue
+				}
+
+				// Descifrar el mensaje con la clave privada del cliente
+				decryptedMessage, err := decryptMessageWithPrivateKey(c, encryptedMessage)
+				if err != nil {
+					fmt.Println("Error al descifrar el mensaje:", err)
+					continue
+				}
+
+				// Mostrar el mensaje descifrado
+				fmt.Printf("Mensaje descifrado: %s\n", decryptedMessage)
+			}
+		} else {
+			fmt.Println("Error al recuperar mensajes:", res.Message)
 		}
 	} else {
-		fmt.Println("Error al recibir mensajes:", res.Message)
+		fmt.Println("Error al iniciar sesión:", res.Message)
 	}
 }
 
@@ -743,7 +792,7 @@ func (c *client) updateData() {
 	newData := ui.ReadInput("Introduce el contenido que desees almacenar")
 
 	// Ciframos newData con kData de usuario
-	nonce, encryptedData, err := encryptData(c, newData)
+	nonce, encryptedData, err := encryptData(c, []byte(newData))
 	if err != nil {
 		fmt.Println("Error al cifrar los datos:", err)
 		return
@@ -774,6 +823,7 @@ func (c *client) logoutUser() {
 	fmt.Println("** Cerrar sesión **")
 
 	if c.currentUser == "" || c.authToken == "" {
+		print(c.currentUser, " ", c.authToken)
 		fmt.Println("No estás logueado.")
 		return
 	}
@@ -846,7 +896,7 @@ func (c *client) sendRequest(req api.Request) api.Response {
 
 func (c *client) sendMessage() {
 	fmt.Println("** Enviar mensaje **")
-
+	print(c.currentUser, " ", c.authToken)
 	if c.currentUser == "" || c.authToken == "" {
 		fmt.Println("No estás logueado. Inicia sesión primero.")
 		return
@@ -861,9 +911,7 @@ func (c *client) sendMessage() {
 		return
 	}
 
-	// Aqui vas a encriptar el mensaje con la clave publica del destinatario
-	// y luego enviarlo al servidor
-
+	// Verificar si el destinatario existe
 	res := c.sendRequest(api.Request{
 		Action:   api.ActionCheckUser,
 		Username: c.currentUser,
@@ -871,54 +919,45 @@ func (c *client) sendMessage() {
 		Dest:     destinatario,
 	})
 
-	if res.Success {
-		fmt.Println("El usuario es válido.")
-	} else {
+	if !res.Success {
 		fmt.Println("El usuario no existe.")
 		return
 	}
 
-	message := ui.ReadInput("Introduce el mensaje")
-
+	// Obtener la clave pública del destinatario
 	res = c.sendRequest(api.Request{
 		Action:   api.ActionGetPublicKey,
 		Username: c.currentUser,
 		Token:    c.authToken,
+		Dest:     destinatario,
 	})
 
-	// Clave pública del destinatario
-	publicKeyReceptor, err := stringToPublicKey(res.Data)
+	if !res.Success {
+		fmt.Println("Error al obtener la clave pública del destinatario:", res.Message)
+		return
+	}
+
+	// Convertir la clave pública del destinatario de hexadecimal a *rsa.PublicKey
+	publicKeyReceptor, err := stringToRSAPublicKey(res.Data)
 
 	if err != nil {
 		fmt.Println("Error al convertir la clave pública:", err)
 		return
 	}
 
-	_, privateKey := getKeyPairFromPassword(c)
+	// Leer el mensaje a enviar
+	message := ui.ReadInput("Introduce el mensaje")
 
-	var nonce [24]byte
-
-	if _, err := rand.Read(nonce[:]); err != nil {
-		fmt.Printf("Error al generar nonce: %v", err)
+	// Cifrar el mensaje con la clave pública del destinatario
+	encryptedMessage, err := encryptMessageWithPublicKey(publicKeyReceptor, message)
+	if err != nil {
+		fmt.Println("Error al cifrar el mensaje:", err)
 		return
 	}
 
-	fmt.Printf("Nonce: %v con length: %d\n", nonce, len(nonce))
+	encryptedMessageHex := hex.EncodeToString(encryptedMessage)
 
-	// Cifrar el mensaje con la clave pública del destinatario
-	encryptedMessage := box.Seal(nil, []byte(message), &nonce, publicKeyReceptor, privateKey)
-
-	messageWithNonce := append(nonce[:], encryptedMessage...)
-
-	fmt.Printf("Mensaje cifrado (bytes): %x\n", encryptedMessage)
-
-	fmt.Printf("Mensaje cifrado: %v con length: %d\n", messageWithNonce, len(messageWithNonce))
-
-	// Convertir el mensaje cifrado a una cadena hexadecimal para enviarlo
-	encryptedMessageHex := hex.EncodeToString(messageWithNonce)
-
-	fmt.Printf("Mensaje cifrado en hexadecimal: %s con lenght: %d\n", encryptedMessageHex, len(encryptedMessageHex))
-
+	// Enviar el mensaje cifrado al servidor
 	res = c.sendRequest(api.Request{
 		Action:   api.ActionSendMessage,
 		Username: c.currentUser,
@@ -927,14 +966,12 @@ func (c *client) sendMessage() {
 		Data:     encryptedMessageHex,
 	})
 
-	fmt.Println("Éxito:", res.Success)
-	fmt.Println("Mensaje:", res.Message)
+	// Mostrar el resultado
 	if res.Success {
-		fmt.Printf("Mensaje %v enviado a %v", message, destinatario)
+		fmt.Printf("Mensaje enviado con éxito a %v\n", destinatario)
 	} else {
 		fmt.Println("Error al enviar el mensaje:", res.Message)
 	}
-
 }
 
 // HashPassword hashea la contraseña completa con SHA-256
@@ -963,7 +1000,7 @@ func deriveKey(c *client) []byte {
 }
 
 // Cifrar datos con AES-256 GCM
-func encryptData(c *client, data string) ([]byte, []byte, error) {
+func encryptData(c *client, data []byte) ([]byte, []byte, error) {
 	key := deriveKey(c)
 
 	block, err := aes.NewCipher(key)
@@ -971,7 +1008,7 @@ func encryptData(c *client, data string) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 
-	nonce := make([]byte, 12) // GCM estándar usa 12 bytes de nonce
+	nonce := make([]byte, 12) // GCM usa 12 bytes de nonce
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, nil, err
 	}
@@ -981,41 +1018,37 @@ func encryptData(c *client, data string) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 
-	// Cifrado con GCM, incluye el tag de autenticación
-	cipherText := aesGCM.Seal(nil, nonce, []byte(data), nil)
-
+	cipherText := aesGCM.Seal(nil, nonce, data, nil)
 	return nonce, cipherText, nil
 }
 
-func decryptData(c *client, nonce, cipherText []byte) (string, error) {
-	// Verificar que cipherText no sea nil o vacío
+// Descifrar datos con AES-256 GCM
+func decryptData(c *client, nonce, cipherText []byte) ([]byte, error) {
 	if len(cipherText) == 0 {
-		return "", nil
+		return nil, nil
 	}
-
-	// Verificar que nonce tenga la longitud correcta (12 bytes para AES-GCM)
 	if len(nonce) != 12 {
-		return "", fmt.Errorf("invalid nonce length: got %d, expected 12", len(nonce))
+		return nil, fmt.Errorf("invalid nonce length: got %d, expected 12", len(nonce))
 	}
 
 	key := deriveKey(c)
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	aesGCM, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	plainText, err := aesGCM.Open(nil, nonce, cipherText, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(plainText), nil
+	return plainText, nil
 }
 
 // Esta función genera la clave privada del cliente a partir de una semilla
@@ -1107,4 +1140,61 @@ func stringToPublicKey(hexString string) (*[32]byte, error) {
 	copy(publicKey[:], publicKeyBytes)
 
 	return &publicKey, nil
+}
+
+func generateRSAKeyPair() (*rsa.PrivateKey, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048) // 2048 bits es un tamaño seguro
+	if err != nil {
+		return nil, fmt.Errorf("error al generar el par de claves RSA: %v", err)
+	}
+	return privateKey, nil
+}
+
+func encryptMessageWithPublicKey(publicKey *rsa.PublicKey, message string) ([]byte, error) {
+	encryptedMessage, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, []byte(message), nil)
+	if err != nil {
+		return nil, fmt.Errorf("error al cifrar el mensaje: %v", err)
+	}
+	return encryptedMessage, nil
+}
+
+func decryptMessageWithPrivateKey(c *client, encryptedMessage []byte) (string, error) {
+	decryptedMessage, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, c.privateKey, encryptedMessage, nil)
+	print("Tamaño mensaje cifrado:", len(encryptedMessage))
+	fmt.Printf("Privada N: %x\n", c.privateKey.PublicKey.N)
+	res := c.sendRequest(api.Request{
+		Action:   api.ActionGetPublicKey,
+		Username: c.currentUser,
+		Token:    c.authToken,
+		Dest:     c.currentUser,
+	})
+	pKey, _ := stringToRSAPublicKey(res.Data)
+	fmt.Printf("Publica N: %x\n", pKey.N)
+
+	if err != nil {
+		return "", fmt.Errorf("error al descifrar el mensaje: %v", err)
+	}
+	return string(decryptedMessage), nil
+}
+
+func stringToRSAPublicKey(hexString string) (*rsa.PublicKey, error) {
+	// Decodificar la clave pública de hexadecimal a bytes
+	publicKeyBytes, err := hex.DecodeString(hexString)
+	if err != nil {
+		return nil, fmt.Errorf("error al decodificar clave pública: %v", err)
+	}
+
+	// Reconstruir la clave pública desde los bytes
+	publicKey, err := x509.ParsePKIXPublicKey(publicKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error al reconstruir la clave pública: %v", err)
+	}
+
+	// Asegurarse de que sea del tipo *rsa.PublicKey
+	rsaPublicKey, ok := publicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("la clave pública no es de tipo RSA")
+	}
+
+	return rsaPublicKey, nil
 }
