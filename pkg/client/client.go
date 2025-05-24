@@ -686,8 +686,6 @@ func (c *client) loginUser() {
 				Message string `json:"Message"` // Mensaje cifrado (hexadecimal)
 			}
 
-			print("Mensajes en formato JSON:", res.Data)
-
 			// Decodificar los mensajes recibidos
 			err := json.Unmarshal([]byte(res.Data), &messages)
 			if err != nil {
@@ -1160,16 +1158,6 @@ func encryptMessageWithPublicKey(publicKey *rsa.PublicKey, message string) ([]by
 
 func decryptMessageWithPrivateKey(c *client, encryptedMessage []byte) (string, error) {
 	decryptedMessage, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, c.privateKey, encryptedMessage, nil)
-	print("Tamaño mensaje cifrado:", len(encryptedMessage))
-	fmt.Printf("Privada N: %x\n", c.privateKey.PublicKey.N)
-	res := c.sendRequest(api.Request{
-		Action:   api.ActionGetPublicKey,
-		Username: c.currentUser,
-		Token:    c.authToken,
-		Dest:     c.currentUser,
-	})
-	pKey, _ := stringToRSAPublicKey(res.Data)
-	fmt.Printf("Publica N: %x\n", pKey.N)
 
 	if err != nil {
 		return "", fmt.Errorf("error al descifrar el mensaje: %v", err)
