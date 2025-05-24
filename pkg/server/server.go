@@ -1495,13 +1495,10 @@ func (s *server) savePrivateKey(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Faltan datos para guardar clave privada"}
 	}
 
-	fmt.Println("Guardando clave privada para el usuario:", req.Username)
 	if err := s.db.Put("privateKeys", []byte(req.Username), []byte(req.Data)); err != nil {
 		fmt.Print("Error al guardar clave privada database:", err, "\n")
 		return api.Response{Success: false, Message: "Error al guardar clave privada"}
 	}
-
-	fmt.Print("Clave privada guardada: ", req.Data, "\n")
 
 	return api.Response{Success: true, Message: "Clave privada guardada"}
 }

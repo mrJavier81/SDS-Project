@@ -34,6 +34,7 @@ func main() {
 	log := log.New(os.Stdout, "[main] ", log.LstdFlags)
 
 	// Solicitar la contraseña maestra para cifrado y verificación
+	ui.ClearScreen()
 	fmt.Println("=== Sistema de Contraseña Maestra ===")
 	fmt.Println("La contraseña maestra se utiliza para cifrar datos sensibles y logs.")
 	fmt.Println("Una vez establecida, no se puede cambiar. Debe tener al menos 8 caracteres.")
