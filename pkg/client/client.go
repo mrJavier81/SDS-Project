@@ -852,13 +852,18 @@ func (c *client) sendMessage() {
 		fmt.Println("No estás logueado. Inicia sesión primero.")
 		return
 	}
-
 	// Introducir nombre de usuario destinatario
 	destinatario := ui.ReadInput("Nombre de usuario del destinatario")
 
 	// Comprobar si el destinatario es válido
 	if destinatario == "" {
 		fmt.Println("Nombre de usuario inválido.")
+		return
+	}
+
+	// Verificar que el usuario no se envíe un mensaje a sí mismo
+	if destinatario == c.currentUser {
+		fmt.Println("No puedes enviarte un mensaje a ti mismo.")
 		return
 	}
 
