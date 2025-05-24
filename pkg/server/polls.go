@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -8,14 +10,14 @@ import (
 
 // Poll representa una encuesta con una pregunta, opciones y votos.
 type Poll struct {
-	ID           string          // Identificador único para la encuesta
-	Question     string          // La pregunta de la encuesta
-	Options      map[string]int  // Opciones y sus conteos de votos
-	FechaInicio  string          // Fecha de inicio de la encuesta
-	FechaFin     string          // Fecha de fin de la encuesta
-	Creador      string          // Usuario que creó la encuesta
-	Estado       string          // Estado de la encuesta (abierta/cerrada)
-	Participants map[string]bool // Registro de usuarios que han participado
+	ID          string          // Identificador único para la encuesta
+	Question    string          // La pregunta de la encuesta
+	Options     map[string]int  // Opciones y sus conteos de votos
+	FechaInicio string          // Fecha de inicio de la encuesta
+	FechaFin    string          // Fecha de fin de la encuesta
+	Creador     string          // Usuario que creó la encuesta
+	Estado      string          // Estado de la encuesta (abierta/cerrada)
+	VoteHashes  map[string]bool // Registro de usuarios que han participado
 }
 
 // NewPoll crea una nueva encuesta con la pregunta y opciones dadas.
@@ -29,32 +31,34 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 	fechaInicio := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Printf("Creando poll con fecha limite %s y fecha de inicio %s\n", pollEndDate, fechaInicio)
 	return &Poll{
-		ID:           id,
-		Question:     question,
-		Options:      pollOptions,
-		FechaInicio:  fechaInicio,
-		FechaFin:     pollEndDate,
-		Creador:      creador,
-		Estado:       "abierta",
-		Participants: make(map[string]bool),
+		ID:          id,
+		Question:    question,
+		Options:     pollOptions,
+		FechaInicio: fechaInicio,
+		FechaFin:    pollEndDate,
+		Creador:     creador,
+		Estado:      "abierta",
+		VoteHashes:  make(map[string]bool),
 	}
 }
 
-// AddParticipant agrega un usuario al registro de participantes.
-func (p *Poll) AddParticipant(user string) error {
+// Funciones para generar el hash de voto
 
-	if p.Participants[user] {
-		return fmt.Errorf("el usuario '%s' ya ha participado", user)
-	}
+func GenerateVoteHash(username, pollID string, salt []byte) string {
 
-	p.Participants[user] = true
-	return nil
+	data := username + pollID + string(salt)
+	hash := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(hash[:])
 }
 
-// HasParticipated verifica si un usuario ya ha participado.
-func (p *Poll) HasParticipated(user string) bool {
+// Comprueba si el hash del usuario ya está registrado
+func (p *Poll) HasVoted(voteHash string) bool {
+	return p.VoteHashes[voteHash]
+}
 
-	return p.Participants[user]
+// Registra el hash de voto
+func (p *Poll) RegisterVoteHash(voteHash string) {
+	p.VoteHashes[voteHash] = true
 }
 
 // Vote permite a un usuario votar por una opción.

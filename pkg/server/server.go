@@ -44,6 +44,7 @@ type server struct {
 	polls          map[string]*Poll               // polls es un mapa que contiene las encuestas activas
 	failedAttempts map[string]*FailedLoginAttempt // Registro de intentos fallidos de inicio de sesión
 	nextPollID     int64                          // ID para la próxima encuesta
+	saltVoto       []byte                         // Salt para las votaciones
 }
 
 // initBucket intenta inicializar un bucket realizando una operación simple
@@ -182,6 +183,20 @@ func Run(masterPassword string) error {
 	if err != nil {
 		return fmt.Errorf("error iniciando servidor HTTPS: %v", err)
 	}
+
+	// Almacenamos el salt para las votacione
+	// Al iniciar el servidor:
+	salt, err := srv.db.Get("config", []byte("saltVoto"))
+	if err != nil || len(salt) == 0 {
+		salt = make([]byte, 16)
+		if _, err := rand.Read(salt); err != nil {
+			return fmt.Errorf("no se pudo generar el salt de votos: %v", err)
+		}
+		if err := srv.db.Put("config", []byte("saltVoto"), salt); err != nil {
+			return fmt.Errorf("no se pudo guardar el salt de votos: %v", err)
+		}
+	}
+	srv.saltVoto = salt // Guarda el salt en el struct del servidor para usarlo después
 
 	return nil
 }
@@ -437,7 +452,7 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 				continue
 			}
 		} else if filtro == "participate" {
-			if !poll.HasParticipated(user) {
+			if !poll.HasVoted(user) {
 				continue
 			}
 		}
@@ -470,6 +485,8 @@ func (s *server) vote(req api.Request) api.Response {
 		s.logMessage(fmt.Sprintf("Error al registrar voto en la encuesta %s: %v", req.PollID, err))
 		return api.Response{Success: false, Message: err.Error()}
 	}
+	//
+
 	pollData, err := json.Marshal(poll)
 	if err != nil {
 		return api.Response{Success: false, Message: "Error al serializar la encuesta actualizada"}
