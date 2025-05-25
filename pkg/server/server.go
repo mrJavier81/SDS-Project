@@ -198,8 +198,6 @@ func Run(masterPassword string) error {
 	}
 	srv.saltVoto = salt // Guarda el salt en el struct del servidor para usarlo después
 
-	fmt.Printf("Salt de votos inicializado: %x\n", srv.saltVoto)
-
 	return nil
 }
 
@@ -316,65 +314,6 @@ func (s *server) loadPolls() error {
 	return nil
 }
 
-// Obtenemos el ID de la próxima encuesta desde la base de datos, y si no existe, lo inicializamos a 1
-func (s *server) initializeNextPollID() error {
-	// Intentar obtener el ID de la próxima encuesta desde la base de datos
-	data, err := s.db.Get("config", []byte("nextPollID"))
-	if err != nil {
-		s.log.Printf("Inicializando nextPollID: %s", data)
-		// Si no existe la clave, inicializar el ID a 1
-		if strings.Contains(err.Error(), "clave no encontrada") {
-			s.nextPollID = 1
-			// Guardar el valor inicial en la base de datos
-			return s.saveNextPollID()
-		}
-		return fmt.Errorf("error al obtener nextPollID: %v", err)
-	}
-	s.log.Printf("NextpollID inicializado a %v", s.nextPollID)
-
-	// Convertir el valor recuperado a int64
-	nextPollID, err := strconv.ParseInt(string(data), 10, 64)
-	if err != nil {
-		return fmt.Errorf("error al parsear nextPollID: %v", err)
-	}
-
-	// Asignar el valor al campo nextPollID del servidor
-	s.nextPollID = nextPollID
-	return nil
-}
-
-// Esta funcion se encarga de cargar el ID de la próxima encuesta desde la base de datos
-func (s *server) saveNextPollID() error { // Convertimos el valor de nextPollID a string
-	nextPollIDStr := strconv.FormatInt(s.nextPollID, 10)
-
-	s.log.Printf("Guardando nextPollID: %s", nextPollIDStr)
-
-	// Guardamos el valor en la base de datos bajo el namespace "config" con la clave "nextPollID"
-	if err := s.db.Put("config", []byte("nextPollID"), []byte(nextPollIDStr)); err != nil {
-		return fmt.Errorf("error al guardar nextPollID en la base de datos: %v", err)
-	}
-
-	return nil
-}
-
-/*func (s *server) managePolls(req api.Request) api.Response {
-	// Solo los administradores pueden gestionar encuestas
-	if req.Role != "admin" && req.Role != "superadmin" {
-		return api.Response{Success: false, Message: "Acceso denegado"}
-	}
-
-	switch req.Data {
-	case "list":
-		return s.listPolls("")
-	case "delete":
-		return s.deletePoll(req)
-	case "create":
-		return s.createPoll(req)
-	default:
-		return api.Response{Success: false, Message: "Acción no válida"}
-	}
-}*/
-
 func (s *server) createPoll(req api.Request) api.Response {
 	// Crear una nueva encuesta
 	if req.Question == "" || len(req.Options) == 0 {
@@ -419,16 +358,6 @@ func (s *server) createPoll(req api.Request) api.Response {
 	return api.Response{Success: true, Message: "Encuesta creada", Data: poll.Question}
 }
 
-func (s *server) deletePoll(req api.Request) api.Response {
-	// Eliminar encuesta por ID
-	if len(s.polls) == 0 {
-		return api.Response{Success: false, Message: "No hay encuestas activas"}
-	}
-
-	// Aquí se eliminaría la encuesta por ID (no implementado)
-	return api.Response{Success: true, Message: "Encuesta eliminada"}
-}
-
 // listPolls lista las encuestas activas o pasadas según el filtro
 func (s *server) listPolls(filtro string, user string) api.Response {
 
@@ -465,8 +394,9 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 			if !poll.HasVoted(voteHash) {
 				continue
 			}
+		} else if poll.Estado == "cerrada" {
+			continue
 		}
-		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
 			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, len(poll.VoteHashes))
@@ -497,8 +427,6 @@ func (s *server) vote(req api.Request) api.Response {
 	}
 
 	voteHash := GenerateVoteHash(req.Username, req.PollID, s.saltVoto)
-
-	fmt.Printf("[Vote] Hash de voto generado: %s\n", voteHash)
 
 	if poll.HasVoted(voteHash) {
 		return api.Response{Success: false, Message: "Ya has participado en esta encuesta"}

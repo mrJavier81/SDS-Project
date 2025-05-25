@@ -29,7 +29,6 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 
 	pollEndDate := time.Now().Add(time.Duration(duracionHoras) * time.Hour).Format("2006-01-02 15:04:05")
 	fechaInicio := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("Creando poll con fecha limite %s y fecha de inicio %s\n", pollEndDate, fechaInicio)
 	return &Poll{
 		ID:          id,
 		Question:    question,
@@ -44,10 +43,9 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 
 func (p *Poll) UpdateEstado() {
 
-	fmt.Printf("Actualizando estado de la encuesta %s\n", p.ID)
 	now := time.Now()
 	fechaFin, err := time.Parse("2006-01-02 15:04:05", p.FechaFin)
-	fmt.Printf("Fecha de fin de la encuesta %s: %s Fecha de hoy: %s\n", p.ID, fechaFin, now)
+
 	if err != nil {
 		return // Si hay error, no cambiamos nada
 	}
@@ -55,14 +53,12 @@ func (p *Poll) UpdateEstado() {
 		p.Estado = "cerrada"
 	}
 
-	fmt.Printf("Estado de la encuesta %s actualizado a %s\n", p.ID, p.Estado)
 }
 
 // Funciones para generar el hash de voto
 
 func GenerateVoteHash(username, pollID string, salt []byte) string {
 
-	fmt.Printf("Generando hash de voto para el usuario %s y la encuesta %s\n", username, pollID)
 	data := username + pollID + string(salt)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
@@ -106,6 +102,6 @@ func (p *Poll) ToJSON() ([]byte, error) {
 		fmt.Println("Error al convertir la encuesta a JSON:", err)
 		return nil, err
 	}
-	fmt.Println("Encuesta en formato JSON:", string(data))
+
 	return data, nil
 }
