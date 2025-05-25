@@ -42,6 +42,22 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 	}
 }
 
+func (p *Poll) UpdateEstado() {
+
+	fmt.Printf("Actualizando estado de la encuesta %s\n", p.ID)
+	now := time.Now()
+	fechaFin, err := time.Parse("2006-01-02 15:04:05", p.FechaFin)
+	fmt.Printf("Fecha de fin de la encuesta %s: %s Fecha de hoy: %s\n", p.ID, fechaFin, now)
+	if err != nil {
+		return // Si hay error, no cambiamos nada
+	}
+	if now.After(fechaFin) {
+		p.Estado = "cerrada"
+	}
+
+	fmt.Printf("Estado de la encuesta %s actualizado a %s\n", p.ID, p.Estado)
+}
+
 // Funciones para generar el hash de voto
 
 func GenerateVoteHash(username, pollID string, salt []byte) string {

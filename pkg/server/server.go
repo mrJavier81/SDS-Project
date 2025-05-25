@@ -432,7 +432,6 @@ func (s *server) deletePoll(req api.Request) api.Response {
 // listPolls lista las encuestas activas o pasadas según el filtro
 func (s *server) listPolls(filtro string, user string) api.Response {
 
-	fmt.Printf("Usuario que solicita la lista de encuestas: %s\n", user)
 	// Listar encuestas activas
 	if len(s.polls) == 0 {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
@@ -443,7 +442,9 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 	voteHash := ""
 	for _, poll := range s.polls {
 
-		fmt.Printf("Listando poll no. %d\n", pollsListadas)
+		// Actualizar el estado de la encuesta
+		poll.UpdateEstado()
+
 		if poll.ID == "__init__" {
 			s.log.Println("Poll ID es __init__, continuando...")
 			continue
@@ -460,8 +461,6 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 			}
 		} else if filtro == "participate" {
 			voteHash = GenerateVoteHash(user, poll.ID, s.saltVoto)
-
-			fmt.Printf("[Filtro] Hash de voto generado: %s\n del user %s\n", voteHash, user)
 
 			if !poll.HasVoted(voteHash) {
 				continue
@@ -490,6 +489,11 @@ func (s *server) vote(req api.Request) api.Response {
 	poll, exists := s.polls[req.PollID]
 	if !exists {
 		return api.Response{Success: false, Message: "Encuesta no encontrada"}
+	}
+
+	poll.UpdateEstado()
+	if poll.Estado == "cerrada" {
+		return api.Response{Success: false, Message: "La votación está cerrada"}
 	}
 
 	voteHash := GenerateVoteHash(req.Username, req.PollID, s.saltVoto)
