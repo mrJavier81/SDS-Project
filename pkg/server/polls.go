@@ -46,6 +46,7 @@ func NewPoll(id, question string, options []string, duracionHoras int, creador s
 
 func GenerateVoteHash(username, pollID string, salt []byte) string {
 
+	fmt.Printf("Generando hash de voto para el usuario %s y la encuesta %s\n", username, pollID)
 	data := username + pollID + string(salt)
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])

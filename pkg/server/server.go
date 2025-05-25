@@ -198,6 +198,8 @@ func Run(masterPassword string) error {
 	}
 	srv.saltVoto = salt // Guarda el salt en el struct del servidor para usarlo después
 
+	fmt.Printf("Salt de votos inicializado: %x\n", srv.saltVoto)
+
 	return nil
 }
 
@@ -429,6 +431,8 @@ func (s *server) deletePoll(req api.Request) api.Response {
 
 // listPolls lista las encuestas activas o pasadas según el filtro
 func (s *server) listPolls(filtro string, user string) api.Response {
+
+	fmt.Printf("Usuario que solicita la lista de encuestas: %s\n", user)
 	// Listar encuestas activas
 	if len(s.polls) == 0 {
 		return api.Response{Success: false, Message: "No hay encuestas activas"}
@@ -436,7 +440,10 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 
 	pollList := "\n"
 	pollsListadas := 0
+	voteHash := ""
 	for _, poll := range s.polls {
+
+		fmt.Printf("Listando poll no. %d\n", pollsListadas)
 		if poll.ID == "__init__" {
 			s.log.Println("Poll ID es __init__, continuando...")
 			continue
@@ -452,14 +459,18 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 				continue
 			}
 		} else if filtro == "participate" {
-			if !poll.HasVoted(user) {
+			voteHash = GenerateVoteHash(user, poll.ID, s.saltVoto)
+
+			fmt.Printf("[Filtro] Hash de voto generado: %s\n del user %s\n", voteHash, user)
+
+			if !poll.HasVoted(voteHash) {
 				continue
 			}
 		}
 		// Aquí se podría agregar más lógica para filtrar por estado o creador
 
 		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
-			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, poll.Participants)
+			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, len(poll.VoteHashes))
 		pollsListadas++
 	}
 
@@ -481,10 +492,20 @@ func (s *server) vote(req api.Request) api.Response {
 		return api.Response{Success: false, Message: "Encuesta no encontrada"}
 	}
 
+	voteHash := GenerateVoteHash(req.Username, req.PollID, s.saltVoto)
+
+	fmt.Printf("[Vote] Hash de voto generado: %s\n", voteHash)
+
+	if poll.HasVoted(voteHash) {
+		return api.Response{Success: false, Message: "Ya has participado en esta encuesta"}
+	}
+
 	if err := poll.Vote(req.Option); err != nil {
 		s.logMessage(fmt.Sprintf("Error al registrar voto en la encuesta %s: %v", req.PollID, err))
 		return api.Response{Success: false, Message: err.Error()}
 	}
+
+	poll.RegisterVoteHash(voteHash) // Registrar el hash de voto
 	//
 
 	pollData, err := json.Marshal(poll)

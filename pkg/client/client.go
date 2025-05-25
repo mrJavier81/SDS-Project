@@ -239,40 +239,8 @@ func (c *client) administrarVotaciones() {
 			Creador:  creador,
 		})
 		fmt.Println("Resultado:", res.Message)
+
 	case 2:
-		// Modificar votación
-		pollID := ui.ReadInput("ID de la votación a modificar")
-		newQuestion := ui.ReadInput("Nueva pregunta de la votación")
-		rawOptions := strings.Split(ui.ReadInput("Nuevas opciones de la votación (separadas por comas)"), ",")
-
-		// Eliminar opciones vacías y duplicadas
-		optionSet := make(map[string]struct{})
-		var newOptions []string
-		for _, opt := range rawOptions {
-			opt = strings.TrimSpace(opt)
-			if opt == "" {
-				continue
-			}
-			if _, exists := optionSet[opt]; !exists {
-				optionSet[opt] = struct{}{}
-				newOptions = append(newOptions, opt)
-			}
-		}
-
-		if len(newOptions) == 0 {
-			fmt.Println("Debes introducir al menos una opción válida y no repetida.")
-			return
-		}
-
-		res := c.sendRequest(api.Request{
-			Action:   api.ActionModifyPoll,
-			Role:     c.userRole,
-			PollID:   pollID,
-			Question: newQuestion,
-			Options:  newOptions,
-		})
-		fmt.Println("Resultado:", res.Message)
-	case 3:
 		// Eliminar votación
 		pollID := ui.ReadInput("ID de la votación a eliminar")
 		res := c.sendRequest(api.Request{
@@ -281,7 +249,7 @@ func (c *client) administrarVotaciones() {
 			PollID: pollID,
 		})
 		fmt.Println("Resultado:", res.Message)
-	case 4:
+	case 3:
 		// Ver resultados de votación
 		pollID := ui.ReadInput("ID de la votación a ver resultados")
 		res := c.sendRequest(api.Request{
@@ -295,7 +263,7 @@ func (c *client) administrarVotaciones() {
 		} else {
 			fmt.Println("Error:", res.Message)
 		}
-	case 5:
+	case 4:
 		// Volver al menú principal
 		return
 	}
@@ -320,9 +288,10 @@ func (c *client) verVotaciones() {
 	case 2:
 		// Ver votaciones en las que participas
 		res := c.sendRequest(api.Request{
-			Action: api.ActionFetchPolls,
-			Role:   c.userRole,
-			Data:   "participated",
+			Action:   api.ActionFetchPolls,
+			Role:     c.userRole,
+			Data:     "participate",
+			Username: c.currentUser,
 		})
 		if res.Success {
 			fmt.Println("Votaciones en las que participas:")
@@ -333,9 +302,10 @@ func (c *client) verVotaciones() {
 	case 3:
 		// Ver votaciones pasadas
 		res := c.sendRequest(api.Request{
-			Action: api.ActionFetchPolls,
-			Role:   c.userRole,
-			Data:   "past",
+			Action:   api.ActionFetchPolls,
+			Role:     c.userRole,
+			Data:     "past",
+			Username: c.currentUser,
 		})
 		if res.Success {
 			fmt.Println("Votaciones pasadas:")
@@ -383,14 +353,14 @@ func (c *client) verVotacionesActivas() {
 
 	if res.Success {
 		var poll struct {
-			ID           string          `json:"ID"`
-			Question     string          `json:"Question"`
-			Options      map[string]int  `json:"Options"`
-			FechaInicio  string          `json:"FechaInicio"`
-			FechaFin     string          `json:"FechaFin"`
-			Creador      string          `json:"Creador"`
-			Estado       string          `json:"Estado"`
-			Participants map[string]bool `json:"Participants"`
+			ID          string          `json:"ID"`
+			Question    string          `json:"Question"`
+			Options     map[string]int  `json:"Options"`
+			FechaInicio string          `json:"FechaInicio"`
+			FechaFin    string          `json:"FechaFin"`
+			Creador     string          `json:"Creador"`
+			Estado      string          `json:"Estado"`
+			VoteHashes  map[string]bool `json:"VoteHashes"`
 		}
 		err := json.Unmarshal([]byte(res.Data), &poll)
 		if err != nil {
@@ -408,15 +378,24 @@ func (c *client) verVotacionesActivas() {
 		fmt.Printf("Estado: %s\n", poll.Estado)
 		fmt.Printf("Fecha de inicio: %s\n", poll.FechaInicio)
 		fmt.Printf("Fecha de fin: %s\n", poll.FechaFin)
-		fmt.Printf("Participantes: %d\n", len(poll.Participants))
+		fmt.Printf("Participantes: %d\n", len(poll.VoteHashes))
 		fmt.Println("-------------------------------------")
+
 		if ui.ReadInput("¿Quieres votar? (s/n)") == "s" {
 			// Votar
 			option := ui.ReadInput("Selecciona una opción para votar")
+			// Verificar si la opción es válida
+			if _, exists := poll.Options[option]; !exists {
+				fmt.Println("Opción no válida. Por favor, elige una opción existente.")
+				return
+			}
+
 			res := c.sendRequest(api.Request{
-				Action: api.ActionVote,
-				PollID: poll.ID,
-				Option: option,
+				Action:   api.ActionVote,
+				PollID:   poll.ID,
+				Token:    c.authToken,
+				Option:   option,
+				Username: c.currentUser,
 			})
 			if res.Success {
 				fmt.Println("Voto registrado con éxito.")
@@ -448,9 +427,10 @@ func (c *client) administrarUsuarios() {
 	case 1:
 		// List users
 		res := c.sendRequest(api.Request{
-			Action: api.ActionManageUsers,
-			Role:   c.userRole,
-			Data:   "list",
+			Action:   api.ActionManageUsers,
+			Role:     c.userRole,
+			Data:     "list",
+			Username: c.currentUser,
 		})
 		if res.Success {
 			fmt.Println("Usuarios registrados:")
