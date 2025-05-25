@@ -398,8 +398,20 @@ func (s *server) listPolls(filtro string, user string) api.Response {
 			continue
 		}
 
-		pollList += fmt.Sprintf("ID: %s, Estado: %s Pregunta: %s, Opciones: %v, Creador: %s, Fecha limite: %s, Participantes: %v, \n",
-			poll.ID, poll.Estado, poll.Question, poll.Options, poll.Creador, poll.FechaFin, len(poll.VoteHashes))
+		// Formatear las opciones de la encuesta
+		opcionesStr := "["
+		first := true
+		for opcion, votos := range poll.Options {
+			if !first {
+				opcionesStr += ", "
+			}
+			opcionesStr += fmt.Sprintf("%s: %d votos", opcion, votos)
+			first = false
+		}
+		opcionesStr += "]"
+
+		pollList += fmt.Sprintf("[%s] Pregunta: %s Estado: %s , Opciones: %v, Creador: %s, Fecha limite: %s \n",
+			poll.ID, poll.Question, poll.Estado, opcionesStr, poll.Creador, poll.FechaFin)
 		pollsListadas++
 	}
 

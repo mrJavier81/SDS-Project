@@ -670,11 +670,7 @@ func (c *client) fetchData() {
 		Token:    c.authToken,
 	})
 
-	fmt.Println("Éxito:", res.Success)
-	fmt.Println("Mensaje:", res.Message)
-
 	if res.Success {
-		fmt.Println("Tus datos:", res.Data)
 
 		// Decode the hex string
 		payload, err := hex.DecodeString(res.Data)
@@ -682,8 +678,6 @@ func (c *client) fetchData() {
 			fmt.Println("Error al decodificar los datos:", err)
 			return
 		}
-
-		fmt.Println("Tus datos descodificados:", payload)
 
 		if len(payload) < 12 {
 			fmt.Println("Datos inválidos: falta el nonce")
@@ -705,7 +699,8 @@ func (c *client) fetchData() {
 			fmt.Println("Error al descifrar los datos:", err)
 			return
 		}
-		fmt.Println("Descifrado:", descifrado)
+
+		fmt.Println("Datos almacenados: ", string(descifrado))
 	}
 }
 
