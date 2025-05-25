@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"prac/pkg/api"
@@ -196,9 +197,6 @@ func (c *client) administrarVotaciones() {
 
 	options := []string{
 		"Crear votación",
-		"Modificar votación",
-		"Eliminar votación",
-		"Ver resultados de votación",
 		"Volver al menú principal",
 	}
 
@@ -228,42 +226,26 @@ func (c *client) administrarVotaciones() {
 			return
 		}
 
-		duration := ui.ReadInput("Duración de la votación (en horas)")
+		durationStr := ui.ReadInput("Duración de la votación (en horas)")
+
+		duration, err := strconv.Atoi(durationStr)
+		if err != nil || duration <= 0 {
+			fmt.Println("La duración debe ser un número positivo.")
+			return
+		}
+
 		creador := c.currentUser
 		res := c.sendRequest(api.Request{
 			Action:   api.ActionCreatePoll,
 			Role:     c.userRole,
 			Question: question,
 			Options:  options,
-			Data:     duration,
+			Data:     durationStr,
 			Creador:  creador,
 		})
 		fmt.Println("Resultado:", res.Message)
 
 	case 2:
-		// Eliminar votación
-		pollID := ui.ReadInput("ID de la votación a eliminar")
-		res := c.sendRequest(api.Request{
-			Action: api.ActionDeletePoll,
-			Role:   c.userRole,
-			PollID: pollID,
-		})
-		fmt.Println("Resultado:", res.Message)
-	case 3:
-		// Ver resultados de votación
-		pollID := ui.ReadInput("ID de la votación a ver resultados")
-		res := c.sendRequest(api.Request{
-			Action: api.ActionFetchPolls,
-			Role:   c.userRole,
-			PollID: pollID,
-		})
-		if res.Success {
-			fmt.Println("Resultados de la votación:")
-			fmt.Println(res.Data)
-		} else {
-			fmt.Println("Error:", res.Message)
-		}
-	case 4:
 		// Volver al menú principal
 		return
 	}
